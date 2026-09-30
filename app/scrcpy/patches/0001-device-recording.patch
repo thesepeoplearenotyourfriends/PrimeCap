@@ -1,0 +1,507 @@
+
+--- server/src/main/java/com/genymobile/scrcpy/AndroidVersions.java
++++ server/src/main/java/com/genymobile/scrcpy/AndroidVersions.java
+@@ -30 +30 @@
+-    public static final int API_35_ANDROID_15 = Build.VERSION_CODES.VANILLA_ICE_CREAM;
++    public static final int API_35_ANDROID_15 = 35;
+--- server/src/main/java/com/genymobile/scrcpy/Options.java
++++ server/src/main/java/com/genymobile/scrcpy/Options.java
+@@ -19,0 +20 @@
++import java.io.File;
+@@ -56,0 +58 @@
++    private String record;
+@@ -206,0 +209,4 @@
++    public String getRecord() {
++        return record;
++    }
++
+@@ -412,0 +419,6 @@
++                case "record":
++                    if (value.isEmpty() || !new File(value).isAbsolute()) {
++                        throw new IllegalArgumentException("record must be an absolute path");
++                    }
++                    options.record = value;
++                    break;
+@@ -523,0 +536,16 @@
++        }
++
++        if (options.record != null) {
++            if (options.videoCodec != VideoCodec.H264) {
++                throw new IllegalArgumentException("record only supports the h264 video codec");
++            }
++            options.video = true;
++            options.audio = true;
++            options.control = false;
++            options.audioCodec = AudioCodec.AAC;
++            options.audioSource = AudioSource.PLAYBACK;
++            options.audioDup = false;
++            options.sendDeviceMeta = false;
++            options.sendFrameMeta = false;
++            options.sendDummyByte = false;
++            options.sendCodecMeta = false;
+--- server/src/main/java/com/genymobile/scrcpy/Server.java
++++ server/src/main/java/com/genymobile/scrcpy/Server.java
+@@ -14,0 +15 @@
++import com.genymobile.scrcpy.device.MediaMuxerWriter;
+@@ -15,0 +17 @@
++import com.genymobile.scrcpy.device.PacketSink;
+@@ -101,0 +104,6 @@
++        RecordingCleanup recordingCleanup = null;
++        if (options.getRecord() != null) {
++            recordingCleanup = new RecordingCleanup();
++            Runtime.getRuntime().addShutdownHook(new RecordingShutdownHook(recordingCleanup));
++        }
++
+@@ -104 +112,2 @@
+-        DesktopConnection connection = DesktopConnection.open(scid, tunnelForward, video, audio, control, sendDummyByte);
++        DesktopConnection connection = null;
++        MediaMuxerWriter recorder = null;
+@@ -106 +115,7 @@
+-            if (options.getSendDeviceMeta()) {
++            if (options.getRecord() != null) {
++                recorder = new MediaMuxerWriter(options.getRecord());
++            } else {
++                connection = DesktopConnection.open(scid, tunnelForward, video, audio, control, sendDummyByte);
++            }
++
++            if (connection != null && options.getSendDeviceMeta()) {
+@@ -128 +143,6 @@
+-                Streamer audioStreamer = new Streamer(connection.getAudioFd(), audioCodec, options.getSendCodecMeta(), options.getSendFrameMeta());
++                PacketSink audioStreamer;
++                if (recorder != null) {
++                    audioStreamer = recorder.getAudioTrack();
++                } else {
++                    audioStreamer = new Streamer(connection.getAudioFd(), audioCodec, options.getSendCodecMeta(), options.getSendFrameMeta());
++                }
+@@ -131 +151 @@
+-                    audioRecorder = new AudioRawRecorder(audioCapture, audioStreamer);
++                    audioRecorder = new AudioRawRecorder(audioCapture, (Streamer) audioStreamer);
+@@ -139,2 +159,7 @@
+-                Streamer videoStreamer = new Streamer(connection.getVideoFd(), options.getVideoCodec(), options.getSendCodecMeta(),
+-                        options.getSendFrameMeta());
++                PacketSink videoStreamer;
++                if (recorder != null) {
++                    videoStreamer = recorder.getVideoTrack();
++                } else {
++                    videoStreamer = new Streamer(connection.getVideoFd(), options.getVideoCodec(), options.getSendCodecMeta(),
++                            options.getSendFrameMeta());
++                }
+@@ -179 +204,3 @@
+-            connection.shutdown();
++            if (connection != null) {
++                connection.shutdown();
++            }
+@@ -193 +220,12 @@
+-            connection.close();
++            try {
++                if (connection != null) {
++                    connection.close();
++                }
++                if (recorder != null) {
++                    recorder.close();
++                }
++            } finally {
++                if (recordingCleanup != null) {
++                    recordingCleanup.signalComplete();
++                }
++            }
+--- server/src/main/java/com/genymobile/scrcpy/audio/AudioEncoder.java
++++ server/src/main/java/com/genymobile/scrcpy/audio/AudioEncoder.java
+@@ -7 +7 @@
+-import com.genymobile.scrcpy.device.Streamer;
++import com.genymobile.scrcpy.device.PacketSink;
+@@ -53 +53 @@
+-    private final Streamer streamer;
++    private final PacketSink streamer;
+@@ -56,0 +57 @@
++    private final Options options;
+@@ -74 +75,2 @@
+-    public AudioEncoder(AudioCapture capture, Streamer streamer, Options options) {
++    public AudioEncoder(AudioCapture capture, PacketSink streamer, Options options) {
++        this.options = options;
+@@ -87,0 +90,3 @@
++        if (MediaFormat.MIMETYPE_AUDIO_AAC.equals(mimeType)) {
++            format.setInteger(MediaFormat.KEY_AAC_PROFILE, android.media.MediaCodecInfo.CodecProfileLevel.AACObjectLC);
++        }
+@@ -207 +212 @@
+-        if (Build.VERSION.SDK_INT < AndroidVersions.API_30_ANDROID_11) {
++        if (Build.VERSION.SDK_INT < AndroidVersions.API_30_ANDROID_11 && options.getRecord() == null) {
+@@ -377 +382,6 @@
+-            // ignore
++            try {
++                streamer.setOutputFormat(format);
++            } catch (IOException e) {
++                Ln.e("Could not configure recording audio track", e);
++                end();
++            }
+--- server/src/main/java/com/genymobile/scrcpy/audio/AudioPlaybackCapture.java
++++ server/src/main/java/com/genymobile/scrcpy/audio/AudioPlaybackCapture.java
+@@ -56,3 +56,5 @@
+-            // audioMixingRuleBuilder.voiceCommunicationCaptureAllowed(true);
+-            Method voiceCommunicationCaptureAllowedMethod = audioMixingRuleBuilderClass.getMethod("voiceCommunicationCaptureAllowed", boolean.class);
+-            voiceCommunicationCaptureAllowedMethod.invoke(audioMixingRuleBuilder, true);
++            if (Build.VERSION.SDK_INT >= AndroidVersions.API_33_ANDROID_13) {
++                // audioMixingRuleBuilder.voiceCommunicationCaptureAllowed(true);
++                Method voiceCommunicationCaptureAllowedMethod = audioMixingRuleBuilderClass.getMethod("voiceCommunicationCaptureAllowed", boolean.class);
++                voiceCommunicationCaptureAllowedMethod.invoke(audioMixingRuleBuilder, true);
++            }
+@@ -112,2 +114,2 @@
+-        if (Build.VERSION.SDK_INT < AndroidVersions.API_33_ANDROID_13) {
+-            Ln.w("Audio disabled: audio playback capture source not supported before Android 13");
++        if (Build.VERSION.SDK_INT < AndroidVersions.API_29_ANDROID_10) {
++            Ln.w("Audio disabled: audio playback capture source not supported before Android 10");
+--- server/src/main/java/com/genymobile/scrcpy/device/Streamer.java
++++ server/src/main/java/com/genymobile/scrcpy/device/Streamer.java
+@@ -15 +15 @@
+-public final class Streamer {
++public final class Streamer implements PacketSink {
+@@ -66,0 +67,5 @@
++    }
++
++    @Override
++    public void setOutputFormat(android.media.MediaFormat format) {
++        // The scrcpy socket protocol carries codec configuration as packets.
+--- server/src/main/java/com/genymobile/scrcpy/video/SurfaceEncoder.java
++++ server/src/main/java/com/genymobile/scrcpy/video/SurfaceEncoder.java
+@@ -8 +8 @@
+-import com.genymobile.scrcpy.device.Streamer;
++import com.genymobile.scrcpy.device.PacketSink;
+@@ -40 +40 @@
+-    private final Streamer streamer;
++    private final PacketSink streamer;
+@@ -55 +55 @@
+-    public SurfaceEncoder(SurfaceCapture capture, Streamer streamer, Options options) {
++    public SurfaceEncoder(SurfaceCapture capture, PacketSink streamer, Options options) {
+@@ -197 +197 @@
+-    private void encode(MediaCodec codec, Streamer streamer) throws IOException {
++    private void encode(MediaCodec codec, PacketSink streamer) throws IOException {
+@@ -203,0 +204,3 @@
++                if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
++                    streamer.setOutputFormat(codec.getOutputFormat());
++                }
+--- server/src/main/java/com/genymobile/scrcpy/RecordingCleanup.java
++++ server/src/main/java/com/genymobile/scrcpy/RecordingCleanup.java
+@@ -0,0 +1,22 @@
++package com.genymobile.scrcpy;
++
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.TimeUnit;
++
++public final class RecordingCleanup {
++    private static final long SHUTDOWN_TIMEOUT_SECONDS = 15;
++
++    private final CountDownLatch complete = new CountDownLatch(1);
++
++    public void signalComplete() {
++        complete.countDown();
++    }
++
++    public void awaitComplete() {
++        try {
++            complete.await(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
++        } catch (InterruptedException e) {
++            Thread.currentThread().interrupt();
++        }
++    }
++}
+--- server/src/main/java/com/genymobile/scrcpy/RecordingShutdownHook.java
++++ server/src/main/java/com/genymobile/scrcpy/RecordingShutdownHook.java
+@@ -0,0 +1,21 @@
++package com.genymobile.scrcpy;
++
++import android.os.Looper;
++
++public final class RecordingShutdownHook extends Thread {
++    private final RecordingCleanup cleanup;
++
++    public RecordingShutdownHook(RecordingCleanup cleanup) {
++        super("recording-shutdown");
++        this.cleanup = cleanup;
++    }
++
++    @Override
++    public void run() {
++        Looper mainLooper = Looper.getMainLooper();
++        if (mainLooper != null) {
++            mainLooper.quitSafely();
++        }
++        cleanup.awaitComplete();
++    }
++}
+--- server/src/main/java/com/genymobile/scrcpy/device/MediaMuxerWriter.java
++++ server/src/main/java/com/genymobile/scrcpy/device/MediaMuxerWriter.java
+@@ -0,0 +1,157 @@
++package com.genymobile.scrcpy.device;
++
++import com.genymobile.scrcpy.audio.AudioCodec;
++import com.genymobile.scrcpy.video.VideoCodec;
++
++import android.media.MediaCodec;
++import android.media.MediaFormat;
++import android.media.MediaMuxer;
++
++import java.io.Closeable;
++import java.io.IOException;
++import java.nio.ByteBuffer;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
++
++public final class MediaMuxerWriter implements Closeable {
++    private static final int MAX_PENDING_SAMPLES = 128;
++    private static final int MAX_PENDING_BYTES = 8 * 1024 * 1024;
++
++    private final MediaMuxer muxer;
++    private final MuxerTrack videoTrack;
++    private final MuxerTrack audioTrack;
++    private final List<MuxerPacket> pendingPackets = new ArrayList<>();
++    private int pendingBytes;
++    private boolean started;
++    private boolean closed;
++    private long firstVideoPts = Long.MIN_VALUE;
++    private long firstAudioPts = Long.MIN_VALUE;
++    private long recordingOrigin;
++    private long lastVideoPts = -1;
++    private long lastAudioPts = -1;
++
++    public MediaMuxerWriter(String path) throws IOException {
++        muxer = new MediaMuxer(path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
++        videoTrack = new MuxerTrack(this, VideoCodec.H264);
++        audioTrack = new MuxerTrack(this, AudioCodec.AAC);
++    }
++
++    public MuxerTrack getVideoTrack() {
++        return videoTrack;
++    }
++
++    public MuxerTrack getAudioTrack() {
++        return audioTrack;
++    }
++
++    synchronized void setOutputFormat(MuxerTrack track, MediaFormat format) throws IOException {
++        checkOpen();
++        if (track.getIndex() != -1) {
++            return;
++        }
++        if (started) {
++            throw new IOException("Track format changed after MP4 muxing started");
++        }
++        track.setIndex(muxer.addTrack(format));
++        tryStart();
++    }
++
++    synchronized void writePacket(MuxerTrack track, ByteBuffer buffer, MediaCodec.BufferInfo info) throws IOException {
++        checkOpen();
++        if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0 || info.size == 0) {
++            return;
++        }
++        if (track.getIndex() == -1) {
++            throw new IOException("Encoded sample received before its output format");
++        }
++        if (!started) {
++            bufferPendingPacket(track, buffer, info);
++            if (track == videoTrack && firstVideoPts == Long.MIN_VALUE) {
++                firstVideoPts = info.presentationTimeUs;
++            } else if (track == audioTrack && firstAudioPts == Long.MIN_VALUE) {
++                firstAudioPts = info.presentationTimeUs;
++            }
++            tryStart();
++        } else {
++            writeSample(track, buffer, info);
++        }
++    }
++
++    private void bufferPendingPacket(MuxerTrack track, ByteBuffer buffer, MediaCodec.BufferInfo info) throws IOException {
++        if (pendingPackets.size() >= MAX_PENDING_SAMPLES || pendingBytes + info.size > MAX_PENDING_BYTES) {
++            throw new IOException("Too much encoded data buffered before MP4 muxer startup");
++        }
++        ByteBuffer copy = ByteBuffer.allocateDirect(info.size);
++        ByteBuffer source = buffer.duplicate();
++        source.position(info.offset);
++        source.limit(info.offset + info.size);
++        copy.put(source);
++        copy.flip();
++        MediaCodec.BufferInfo copyInfo = new MediaCodec.BufferInfo();
++        copyInfo.set(0, info.size, info.presentationTimeUs, info.flags);
++        pendingPackets.add(new MuxerPacket(track, copy, copyInfo));
++        pendingBytes += info.size;
++    }
++
++    private void tryStart() {
++        if (videoTrack.getIndex() == -1 || audioTrack.getIndex() == -1
++                || firstVideoPts == Long.MIN_VALUE || firstAudioPts == Long.MIN_VALUE) {
++            return;
++        }
++        recordingOrigin = Math.min(firstVideoPts, firstAudioPts);
++        muxer.start();
++        started = true;
++        flushPendingPackets();
++    }
++
++    private void flushPendingPackets() {
++        Collections.sort(pendingPackets, new MuxerPacketComparator());
++        for (MuxerPacket packet : pendingPackets) {
++            writeSample(packet.getTrack(), packet.getBuffer(), packet.getBufferInfo());
++        }
++        pendingPackets.clear();
++        pendingBytes = 0;
++    }
++
++    private void writeSample(MuxerTrack track, ByteBuffer buffer, MediaCodec.BufferInfo info) {
++        long pts = info.presentationTimeUs - recordingOrigin;
++        long lastPts = track == videoTrack ? lastVideoPts : lastAudioPts;
++        if (pts <= lastPts) {
++            pts = lastPts + 1;
++        }
++        if (track == videoTrack) {
++            lastVideoPts = pts;
++        } else {
++            lastAudioPts = pts;
++        }
++
++        MediaCodec.BufferInfo muxerInfo = new MediaCodec.BufferInfo();
++        muxerInfo.set(info.offset, info.size, pts, info.flags);
++        muxer.writeSampleData(track.getIndex(), buffer, muxerInfo);
++    }
++
++    private void checkOpen() throws IOException {
++        if (closed) {
++            throw new IOException("MP4 recorder is closed");
++        }
++    }
++
++    @Override
++    public synchronized void close() throws IOException {
++        if (closed) {
++            return;
++        }
++        closed = true;
++        try {
++            if (started) {
++                muxer.stop();
++            }
++        } catch (IllegalStateException e) {
++            throw new IOException("Could not finalize MP4 recording", e);
++        } finally {
++            muxer.release();
++            pendingPackets.clear();
++        }
++    }
++}
+--- server/src/main/java/com/genymobile/scrcpy/device/MuxerPacket.java
++++ server/src/main/java/com/genymobile/scrcpy/device/MuxerPacket.java
+@@ -0,0 +1,21 @@
++package com.genymobile.scrcpy.device;
++
++import android.media.MediaCodec;
++
++import java.nio.ByteBuffer;
++
++final class MuxerPacket {
++    private final MuxerTrack track;
++    private final ByteBuffer buffer;
++    private final MediaCodec.BufferInfo bufferInfo;
++
++    MuxerPacket(MuxerTrack track, ByteBuffer buffer, MediaCodec.BufferInfo bufferInfo) {
++        this.track = track;
++        this.buffer = buffer;
++        this.bufferInfo = bufferInfo;
++    }
++
++    MuxerTrack getTrack() { return track; }
++    ByteBuffer getBuffer() { return buffer; }
++    MediaCodec.BufferInfo getBufferInfo() { return bufferInfo; }
++}
+--- server/src/main/java/com/genymobile/scrcpy/device/MuxerPacketComparator.java
++++ server/src/main/java/com/genymobile/scrcpy/device/MuxerPacketComparator.java
+@@ -0,0 +1,10 @@
++package com.genymobile.scrcpy.device;
++
++import java.util.Comparator;
++
++final class MuxerPacketComparator implements Comparator<MuxerPacket> {
++    @Override
++    public int compare(MuxerPacket left, MuxerPacket right) {
++        return Long.compare(left.getBufferInfo().presentationTimeUs, right.getBufferInfo().presentationTimeUs);
++    }
++}
+--- server/src/main/java/com/genymobile/scrcpy/device/MuxerTrack.java
++++ server/src/main/java/com/genymobile/scrcpy/device/MuxerTrack.java
+@@ -0,0 +1,58 @@
++package com.genymobile.scrcpy.device;
++
++import com.genymobile.scrcpy.util.Codec;
++
++import android.media.MediaCodec;
++import android.media.MediaFormat;
++
++import java.io.IOException;
++import java.nio.ByteBuffer;
++
++public final class MuxerTrack implements PacketSink {
++    private final MediaMuxerWriter writer;
++    private final Codec codec;
++    private int index = -1;
++
++    MuxerTrack(MediaMuxerWriter writer, Codec codec) {
++        this.writer = writer;
++        this.codec = codec;
++    }
++
++    @Override
++    public Codec getCodec() {
++        return codec;
++    }
++
++    @Override
++    public void writeAudioHeader() {
++        // MediaMuxer gets codec configuration from the output MediaFormat.
++    }
++
++    @Override
++    public void writeVideoHeader(Size videoSize) {
++        // MediaMuxer gets the video size from the output MediaFormat.
++    }
++
++    @Override
++    public void writeDisableStream(boolean error) throws IOException {
++        throw new IOException("A required recording track was disabled");
++    }
++
++    @Override
++    public void setOutputFormat(MediaFormat format) throws IOException {
++        writer.setOutputFormat(this, format);
++    }
++
++    @Override
++    public void writePacket(ByteBuffer buffer, MediaCodec.BufferInfo bufferInfo) throws IOException {
++        writer.writePacket(this, buffer, bufferInfo);
++    }
++
++    int getIndex() {
++        return index;
++    }
++
++    void setIndex(int index) {
++        this.index = index;
++    }
++}
+--- server/src/main/java/com/genymobile/scrcpy/device/PacketSink.java
++++ server/src/main/java/com/genymobile/scrcpy/device/PacketSink.java
+@@ -0,0 +1,16 @@
++package com.genymobile.scrcpy.device;
++
++import com.genymobile.scrcpy.util.Codec;
++import android.media.MediaCodec;
++import android.media.MediaFormat;
++import java.io.IOException;
++import java.nio.ByteBuffer;
++
++public interface PacketSink {
++    Codec getCodec();
++    void writeAudioHeader() throws IOException;
++    void writeVideoHeader(Size videoSize) throws IOException;
++    void writeDisableStream(boolean error) throws IOException;
++    void setOutputFormat(MediaFormat format) throws IOException;
++    void writePacket(ByteBuffer buffer, MediaCodec.BufferInfo bufferInfo) throws IOException;
++}
