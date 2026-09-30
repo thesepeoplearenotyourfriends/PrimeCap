@@ -33,8 +33,8 @@ jobs:
       - name: Install Android SDK platforms and helper build tools
         run: sdkmanager "platforms;android-37.0" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Build performance APK
-        run: ./gradlew assemblePerformance
+      - name: Build performance APK and video daemon
+        run: ./gradlew assemblePerformance buildPrimeCapVideoDaemon
 
       - name: Upload PrimeCap APK
         uses: actions/upload-artifact@v4
@@ -57,5 +57,8 @@ jobs:
               --title "Latest PrimeCap build" \
               --notes "This release is automatically updated with the latest successful PrimeCap build."
           fi
-          gh release upload latest-primecap PrimeCap.apk --clobber
+          gh release upload latest-primecap \
+            PrimeCap.apk \
+            app/scrcpy/build/primecap-video-daemon \
+            --clobber
           gh release edit latest-primecap --latest
