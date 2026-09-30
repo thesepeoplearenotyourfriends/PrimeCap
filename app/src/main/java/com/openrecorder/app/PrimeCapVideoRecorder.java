@@ -11,6 +11,7 @@ import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -33,7 +34,7 @@ final class PrimeCapVideoRecorder {
     private static final String TAG = "PrimeCapVideo";
     private static final String HELPER_ASSET = "primecap-server";
     private static final int MAGIC = 0x50434150;
-    private static final int PROTOCOL_VERSION = 1;
+    private static final int PROTOCOL_VERSION = 2;
     private static final int TYPE_FORMAT = 1;
     private static final int TYPE_SAMPLE = 2;
     private static final int TYPE_END = 3;
@@ -42,7 +43,8 @@ final class PrimeCapVideoRecorder {
     private static final long START_TIMEOUT_MS = 12_000L;
     private static final long STOP_TIMEOUT_MS = 8_000L;
     private static final long SOURCE_CLOCK_TOLERANCE_NANOS = 30_000_000_000L;
-    private static final long MAX_DURATION_US = 60L * 60L * 1_000_000L;
+    private static final String HELPER_PATH = "/data/local/tmp/primecap-server";
+    private static final int HELPER_LOG_LIMIT = 16 * 1024;
 
     private final Context context;
     private final int maxSize;
@@ -54,6 +56,8 @@ final class PrimeCapVideoRecorder {
     private final AtomicBoolean limitNotified = new AtomicBoolean();
     private final CountDownLatch formatReady = new CountDownLatch(1);
     private final CountDownLatch receiverFinished = new CountDownLatch(1);
+    private final CountDownLatch timelineReady = new CountDownLatch(1);
+    private final StringBuilder recentHelperOutput = new StringBuilder();
 
     private RecordingMuxer.Track outputTrack;
     private RecordingTimeline timeline;
@@ -65,6 +69,9 @@ final class PrimeCapVideoRecorder {
     private volatile DataOutputStream helperControl;
     private volatile boolean stopRequested;
     private volatile boolean released;
+    private volatile boolean helperPeerDead;
+    private volatile int helperPid = -1;
+    private volatile int helperUid = -1;
     private boolean formatReceived;
     private boolean started;
     private boolean sourceClockResolved;
@@ -96,12 +103,11 @@ final class PrimeCapVideoRecorder {
         outputTrack = track;
     }
 
-    synchronized void start(RecordingTimeline recordingTimeline) throws IOException {
-        if (started || outputTrack == null || recordingTimeline == null) {
+    synchronized void start() throws IOException {
+        if (started || outputTrack == null) {
             throw new IllegalStateException("Video recorder is not configured");
         }
         prepare();
-        timeline = recordingTimeline;
         started = true;
         String socketName = "primecap_" + UUID.randomUUID().toString().replace("-", "");
         serverSocket = new LocalServerSocket(socketName);
@@ -130,6 +136,14 @@ final class PrimeCapVideoRecorder {
         }
     }
 
+    synchronized void arm(RecordingTimeline recordingTimeline) {
+        if (!started || timeline != null || recordingTimeline == null || formatReady.getCount() != 0) {
+            throw new IllegalStateException("Video recorder is not ready to arm");
+        }
+        timeline = recordingTimeline;
+        timelineReady.countDown();
+    }
+
     void pause() {
         // The helper deliberately keeps encoding; RecordingTimeline drops paused samples.
     }
@@ -149,7 +163,9 @@ final class PrimeCapVideoRecorder {
                 control.writeByte(1);
                 control.flush();
             } catch (IOException error) {
-                Log.w(TAG, "Unable to send helper stop request", error);
+                if (!helperPeerDead) {
+                    Log.w(TAG, "Unable to send helper stop request", error);
+                }
             }
         }
     }
@@ -178,6 +194,7 @@ final class PrimeCapVideoRecorder {
 
     synchronized void release() {
         released = true;
+        timelineReady.countDown();
         requestStop();
         terminateHelper();
         closeSockets();
@@ -193,6 +210,9 @@ final class PrimeCapVideoRecorder {
             if (input.readInt() != MAGIC || input.readInt() != PROTOCOL_VERSION) {
                 throw new IOException("Unsupported PrimeCap helper protocol");
             }
+            helperPid = input.readInt();
+            helperUid = input.readInt();
+            Log.i(TAG, "Connected to helper pid=" + helperPid + " uid=" + helperUid);
             while (true) {
                 int type = input.readUnsignedByte();
                 int length = input.readInt();
@@ -215,8 +235,9 @@ final class PrimeCapVideoRecorder {
                 }
             }
         } catch (Exception error) {
+            helperPeerDead = error instanceof EOFException || !isHelperAlive();
             if (!released) {
-                recordFailure(error);
+                recordFailure(withHelperDiagnostics(error));
             }
         } finally {
             if (!cleanEnd && !released && failure.get() == null) {
@@ -271,6 +292,15 @@ final class PrimeCapVideoRecorder {
             throw new IOException("Invalid PrimeCap sample size");
         }
         byte[] sample = readBytes(input, sampleLength);
+        try {
+            timelineReady.await();
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while arming the recording timeline", error);
+        }
+        if (released || timeline == null) {
+            return;
+        }
         long adjustedPtsUs = adjustPresentationTime(sourcePtsUs);
         if (adjustedPtsUs < 0) {
             return;
@@ -280,7 +310,7 @@ final class PrimeCapVideoRecorder {
                 flags & (MediaCodec.BUFFER_FLAG_KEY_FRAME | MediaCodec.BUFFER_FLAG_PARTIAL_FRAME));
         outputTrack.writeSampleData(ByteBuffer.wrap(sample), info);
         encodedBytesWritten += sample.length;
-        if ((adjustedPtsUs >= MAX_DURATION_US || encodedBytesWritten >= maximumFileSize)
+        if (encodedBytesWritten >= maximumFileSize
                 && limitNotified.compareAndSet(false, true)) {
             listener.onLimitReached();
         }
@@ -326,7 +356,9 @@ final class PrimeCapVideoRecorder {
                 int count;
                 while ((count = stream.read(buffer)) >= 0) {
                     if (count > 0) {
-                        Log.d(TAG, new String(buffer, 0, count));
+                        String output = new String(buffer, 0, count);
+                        appendHelperOutput(output);
+                        Log.d(TAG, output);
                     }
                 }
             } catch (IOException ignored) {
@@ -338,10 +370,9 @@ final class PrimeCapVideoRecorder {
     }
 
     private File deployHelper() throws IOException {
-        File destination = new File(context.getCodeCacheDir(), HELPER_ASSET);
-        File temporary = new File(destination.getPath() + ".new");
+        File source = new File(context.getCodeCacheDir(), HELPER_ASSET + ".stage");
         try (InputStream input = context.getAssets().open(HELPER_ASSET);
-                FileOutputStream output = new FileOutputStream(temporary)) {
+                FileOutputStream output = new FileOutputStream(source)) {
             byte[] buffer = new byte[32 * 1024];
             int count;
             while ((count = input.read(buffer)) >= 0) {
@@ -349,13 +380,26 @@ final class PrimeCapVideoRecorder {
             }
             output.getFD().sync();
         }
-        if (destination.exists() && !destination.delete()) {
-            throw new IOException("Unable to update the PrimeCap helper");
+        String temporaryPath = HELPER_PATH + ".new";
+        String install = "cp " + shellQuote(source.getAbsolutePath()) + " "
+                + shellQuote(temporaryPath) + " && chmod 0644 " + shellQuote(temporaryPath)
+                + " && mv " + shellQuote(temporaryPath) + " " + shellQuote(HELPER_PATH);
+        Process process = new ProcessBuilder("su", "-c", install).redirectErrorStream(true).start();
+        String output = readProcessOutput(process.getInputStream());
+        try {
+            if (process.waitFor() != 0) {
+                throw new IOException("Unable to stage PrimeCap helper: " + output.trim());
+            }
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+            throw new IOException("Interrupted while staging the PrimeCap helper", error);
+        } finally {
+            if (!source.delete()) {
+                Log.w(TAG, "Unable to remove temporary helper asset");
+            }
         }
-        if (!temporary.renameTo(destination) || !destination.setReadable(true, false)) {
-            throw new IOException("Unable to install the PrimeCap helper");
-        }
-        return destination;
+        return new File(HELPER_PATH);
     }
 
     private void recordFailure(Exception error) {
@@ -384,6 +428,58 @@ final class PrimeCapVideoRecorder {
             Thread.currentThread().interrupt();
             process.destroyForcibly();
         }
+    }
+
+    private boolean isHelperAlive() {
+        Process process = helperProcess;
+        return process != null && process.isAlive();
+    }
+
+    private IOException withHelperDiagnostics(Exception cause) {
+        Process process = helperProcess;
+        String exit = "running";
+        if (process != null && process.isAlive()) {
+            try {
+                process.waitFor(250, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        if (process != null && !process.isAlive()) {
+            try {
+                exit = Integer.toString(process.exitValue());
+            } catch (IllegalThreadStateException ignored) {
+                exit = "running";
+            }
+        }
+        String output;
+        synchronized (recentHelperOutput) {
+            output = recentHelperOutput.toString().trim();
+        }
+        String details = "helper pid=" + helperPid + " uid=" + helperUid + " exit=" + exit
+                + (output.isEmpty() ? "" : "; recent output: " + output);
+        Log.e(TAG, details, cause);
+        return new IOException(details, cause);
+    }
+
+    private void appendHelperOutput(String output) {
+        synchronized (recentHelperOutput) {
+            recentHelperOutput.append(output);
+            int excess = recentHelperOutput.length() - HELPER_LOG_LIMIT;
+            if (excess > 0) {
+                recentHelperOutput.delete(0, excess);
+            }
+        }
+    }
+
+    private static String readProcessOutput(InputStream input) throws IOException {
+        StringBuilder output = new StringBuilder();
+        byte[] buffer = new byte[1024];
+        int count;
+        while ((count = input.read(buffer)) >= 0) {
+            output.append(new String(buffer, 0, count));
+        }
+        return output.toString();
     }
 
     private synchronized void closeSockets() {

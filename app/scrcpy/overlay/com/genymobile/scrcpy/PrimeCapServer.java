@@ -11,6 +11,7 @@ import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
+import android.system.Os;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -23,7 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** PrimeCap-only entry point: privileged H.264 display capture over one local socket. */
 final class PrimeCapServer {
     private static final int MAGIC = 0x50434150; // PCAP
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int TYPE_FORMAT = 1;
     private static final int TYPE_SAMPLE = 2;
     private static final int TYPE_END = 3;
@@ -31,6 +32,12 @@ final class PrimeCapServer {
     private static final int MAX_PACKET_SIZE = 16 * 1024 * 1024;
 
     private PrimeCapServer() {}
+
+    static void dropRootPrivileges() throws Exception {
+        if (android.os.Process.myUid() == 0) {
+            Os.setuid(2000);
+        }
+    }
 
     static void run(String... args) throws Exception {
         if (args.length != 5) {
@@ -51,7 +58,8 @@ final class PrimeCapServer {
                 "video_codec=h264", "video_source=display", "display_id=0",
                 "max_size=" + maxSize, "video_bit_rate=" + bitRate,
                 "max_fps=" + maxFps, "send_device_meta=false",
-                "send_codec_meta=false", "send_frame_meta=false", "cleanup=false");
+                "send_codec_meta=false", "send_frame_meta=false", "cleanup=false",
+                "capture_orientation=@");
 
         Workarounds.apply();
         LocalSocket socket = new LocalSocket();
@@ -61,6 +69,8 @@ final class PrimeCapServer {
         DataInputStream input = new DataInputStream(socket.getInputStream());
         output.writeInt(MAGIC);
         output.writeInt(VERSION);
+        output.writeInt(android.os.Process.myPid());
+        output.writeInt(android.os.Process.myUid());
         output.flush();
 
         PrimeCapSink sink = new PrimeCapSink(output);
@@ -111,6 +121,8 @@ final class PrimeCapServer {
         private int width;
         private int height;
         private boolean formatSent;
+        private byte[] pendingCsd0 = new byte[0];
+        private byte[] pendingCsd1 = new byte[0];
 
         PrimeCapSink(DataOutputStream output) {
             this.output = output;
@@ -123,8 +135,10 @@ final class PrimeCapServer {
 
         @Override
         public synchronized void writeVideoHeader(Size size) {
-            width = size.getWidth();
-            height = size.getHeight();
+            if (!formatSent) {
+                width = size.getWidth();
+                height = size.getHeight();
+            }
         }
 
         @Override
@@ -135,8 +149,9 @@ final class PrimeCapServer {
             byte[] bytes = new byte[packet.remaining()];
             packet.get(bytes);
             if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-                if (!formatSent) {
-                    writeFormat(bytes, new byte[0]);
+                if (!formatSent && bytes.length > 0) {
+                    pendingCsd0 = concatenate(pendingCsd0, bytes);
+                    maybeWriteFormat();
                 }
                 return;
             }
@@ -158,18 +173,33 @@ final class PrimeCapServer {
 
         @Override
         public synchronized void writeVideoFormat(MediaFormat format) throws IOException {
+            if (formatSent) {
+                return;
+            }
+            if (format.containsKey(MediaFormat.KEY_WIDTH)) {
+                width = format.getInteger(MediaFormat.KEY_WIDTH);
+            }
+            if (format.containsKey(MediaFormat.KEY_HEIGHT)) {
+                height = format.getInteger(MediaFormat.KEY_HEIGHT);
+            }
             byte[] csd0 = copyBuffer(format.getByteBuffer("csd-0"));
             byte[] csd1 = copyBuffer(format.getByteBuffer("csd-1"));
-            writeFormat(csd0, csd1);
+            if (csd0.length > 0) {
+                pendingCsd0 = csd0;
+                pendingCsd1 = csd1;
+            }
+            maybeWriteFormat();
         }
 
-        private void writeFormat(byte[] csd0, byte[] csd1) throws IOException {
-            if (formatSent) {
-                throw new IOException("Video format changed during recording");
-            }
+        private void maybeWriteFormat() throws IOException {
+            byte[] csd0 = pendingCsd0;
+            byte[] csd1 = pendingCsd1;
             int csdLength = csd0.length + csd1.length;
-            if (width <= 0 || height <= 0 || csd0.length == 0 || csdLength > MAX_PACKET_SIZE - 16) {
-                throw new IOException("Invalid H.264 output format");
+            if (width <= 0 || height <= 0 || !hasH264ParameterSets(csd0, csd1)) {
+                return;
+            }
+            if (csdLength > MAX_PACKET_SIZE - 16) {
+                throw new IOException("H.264 codec configuration is too large");
             }
             output.writeByte(TYPE_FORMAT);
             output.writeInt(16 + csdLength);
@@ -181,6 +211,36 @@ final class PrimeCapServer {
             output.write(csd1);
             output.flush();
             formatSent = true;
+        }
+
+        private static boolean hasH264ParameterSets(byte[] first, byte[] second) {
+            int types = parameterSetTypes(first) | parameterSetTypes(second);
+            return (types & 1) != 0 && (types & 2) != 0;
+        }
+
+        private static int parameterSetTypes(byte[] data) {
+            int types = 0;
+            for (int i = 0; i + 3 < data.length; ++i) {
+                int startCodeLength = data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1
+                        ? 3
+                        : i + 4 < data.length && data[i] == 0 && data[i + 1] == 0
+                                && data[i + 2] == 0 && data[i + 3] == 1 ? 4 : 0;
+                if (startCodeLength > 0 && i + startCodeLength < data.length) {
+                    int nalType = data[i + startCodeLength] & 0x1f;
+                    if (nalType == 7) {
+                        types |= 1;
+                    } else if (nalType == 8) {
+                        types |= 2;
+                    }
+                }
+            }
+            return types;
+        }
+
+        private static byte[] concatenate(byte[] first, byte[] second) {
+            byte[] combined = Arrays.copyOf(first, first.length + second.length);
+            System.arraycopy(second, 0, combined, first.length, second.length);
+            return combined;
         }
 
         private static byte[] copyBuffer(ByteBuffer source) {
