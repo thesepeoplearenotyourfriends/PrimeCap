@@ -1,26 +1,18 @@
-# Primecap scrcpy MP4 recorder
+# PrimeCap scrcpy helper
 
-This directory contains the exact scrcpy 3.3.4 archive and a small server-only
-patch for recording display video and internal playback audio directly to one
-MP4 file on the Android device. The build
-script extracts and patches the archive, then delegates compilation to
-upstream's `server/build_without_gradle.sh`:
+This directory vendors the unmodified scrcpy 3.3.4 release archive plus a small,
+reviewable helper-mode overlay. `build.sh` extracts the archive, applies
+`primecap-helper.patch`, copies the new helper sources, and invokes upstream's
+`server/build_without_gradle.sh` with Android platform/build-tools 35.
 
-```sh
-./build.sh
+The helper is launched only by PrimeCap as root:
+
+```
+CLASSPATH=<extracted-primecap-server> app_process / com.genymobile.scrcpy.Server \
+  primecap <abstract-socket-name> <max-size> <bitrate> <max-fps>
 ```
 
-The result is `build/scrcpy-server`. After copying that file to the device as
-`/data/local/tmp/scrcpy-server`, start an H.264/AAC MP4 recording with:
-
-```sh
-CLASSPATH=/data/local/tmp/scrcpy-server app_process / com.genymobile.scrcpy.Server 3.3.4 record=/sdcard/Movies/test.mp4
-```
-
-Stop the process (for example with `Ctrl+C`) to finish recording. The
-`record` option requires an absolute path, selects display capture with H.264
-video and AAC internal playback audio through Android playback capture (including
-Android 10), and muxes both tracks in-process with Android `MediaMuxer`. It
-does not open a scrcpy desktop socket or write
-temporary elementary streams. Without `record`, upstream server behavior is
-unchanged.
+This branch opens no desktop connection and constructs no scrcpy audio,
+control, recorder, or muxer objects. It sends H.264 codec configuration and
+encoded samples (including their original MediaCodec PTS and flags) over the
+private framed local-socket protocol. OpenRecorder remains the sole MP4 muxer.

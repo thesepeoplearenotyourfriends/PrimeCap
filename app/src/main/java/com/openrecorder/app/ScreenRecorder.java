@@ -6,7 +6,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
-import android.hardware.display.VirtualDisplay;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
@@ -18,7 +17,6 @@ import android.provider.MediaStore;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Display;
-import android.view.Surface;
 import android.view.WindowManager;
 
 import java.io.File;
@@ -26,9 +24,6 @@ import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 
 final class ScreenRecorder {
     interface Listener {
@@ -42,7 +37,6 @@ final class ScreenRecorder {
     private static final long MAX_FILE_SIZE = 5_000_000_000L;
     private static final long MIN_FILE_SIZE = 32L * 1024L * 1024L;
     private static final long STORAGE_RESERVE = 64L * 1024L * 1024L;
-    private static final long CAPTURE_SIZE_TIMEOUT_MS = 500L;
 
     private final Context context;
     private final int resultCode;
@@ -53,20 +47,13 @@ final class ScreenRecorder {
     private final int videoFrameRate;
     private final boolean force16By9Letterboxing;
     private final int videoBitrate;
-    private final int videoCodec;
     private final String namingPattern;
     private final int recordingOrientation;
     private final Listener listener;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final MediaProjection.Callback projectionCallback;
-    private final CountDownLatch capturedSizeReady = new CountDownLatch(1);
-
-    private final AtomicLong capturedContentSize = new AtomicLong();
-
     private MediaProjection projection;
-    private VideoTrackRecorder videoRecorder;
-    private VirtualDisplay virtualDisplay;
-    private Surface surface;
+    private PrimeCapVideoRecorder videoRecorder;
     private InternalAudioRecorder audioRecorder;
     private RecordingMuxer recordingMuxer;
     private RecordingMuxer.Track videoOutputTrack;
@@ -104,7 +91,6 @@ final class ScreenRecorder {
         this.videoFrameRate = RecordingOptions.normalizeVideoFrameRate(videoFrameRate);
         this.force16By9Letterboxing = force16By9Letterboxing;
         this.videoBitrate = RecordingOptions.normalizeVideoBitrate(videoBitrate);
-        this.videoCodec = RecordingOptions.normalizeVideoCodec(videoCodec);
         this.namingPattern = RecordingOptions.normalizeNamingPattern(namingPattern);
         this.recordingOrientation = RecordingOptions.normalizeOrientation(recordingOrientation);
         this.listener = listener;
@@ -114,13 +100,6 @@ final class ScreenRecorder {
                 ScreenRecorder.this.listener.onProjectionStopped();
             }
 
-            @Override
-            public void onCapturedContentResize(int width, int height) {
-                if (width > 0 && height > 0) {
-                    capturedContentSize.set(packSize(width, height));
-                    capturedSizeReady.countDown();
-                }
-            }
         };
     }
 
@@ -142,7 +121,8 @@ final class ScreenRecorder {
     }
 
     static boolean isVideoCodecSupported(int requestedCodec) {
-        return VideoTrackRecorder.isCodecSupported(requestedCodec);
+        return RecordingOptions.normalizeVideoCodec(requestedCodec)
+                == RecordingOptions.VIDEO_CODEC_H264;
     }
 
     synchronized void prepare() throws IOException {
@@ -161,21 +141,6 @@ final class ScreenRecorder {
 
         preparedCaptureSize = getCaptureSize();
         prepareVideoRecorder(preparedCaptureSize);
-
-        virtualDisplay = projection.createVirtualDisplay(
-                "Open Recorder",
-                preparedCaptureSize.width,
-                preparedCaptureSize.height,
-                preparedCaptureSize.densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                null,
-                null,
-                mainHandler);
-        if (virtualDisplay == null) {
-            throw new IOException("Unable to create a virtual display");
-        }
-
-        reconfigureCaptureSize(awaitAccurateCaptureSize(preparedCaptureSize));
 
         if (audioSource != AudioSource.NONE) {
             try {
@@ -197,17 +162,12 @@ final class ScreenRecorder {
             throw new IllegalStateException("ScreenRecorder is single-use");
         }
         prepare();
-        reconfigureCaptureSize(latestAccurateCaptureSize(preparedCaptureSize));
         prepareOutput();
         timeline = new RecordingTimeline(System.nanoTime());
         started = true;
 
+        // Wait for privileged video FORMAT before audio may submit samples to the muxer.
         videoRecorder.start(timeline);
-        try {
-            virtualDisplay.setSurface(surface);
-        } catch (RuntimeException error) {
-            throw new IOException("Unable to connect the capture surface", error);
-        }
         if (audioRecorder != null) {
             try {
                 audioRecorder.start(timeline);
@@ -268,21 +228,11 @@ final class ScreenRecorder {
         if (timeline != null) {
             timeline.stop(System.nanoTime());
         }
-        detachCaptureSurface();
-
         if (videoRecorder != null) {
             videoRecorder.requestStop();
         }
         if (audioRecorder != null) {
             audioRecorder.requestStop();
-        }
-
-        if (audioRecorder != null) {
-            try {
-                audioRecorder.awaitStopped();
-            } catch (IOException error) {
-                disableAudio(error);
-            }
         }
 
         IOException failure = null;
@@ -291,6 +241,14 @@ final class ScreenRecorder {
                 videoRecorder.awaitStopped();
             } catch (IOException error) {
                 failure = error;
+            }
+        }
+
+        if (audioRecorder != null) {
+            try {
+                audioRecorder.awaitStopped();
+            } catch (IOException error) {
+                disableAudio(error);
             }
         }
 
@@ -337,14 +295,6 @@ final class ScreenRecorder {
     }
 
     private void releaseCaptureResources() {
-        if (virtualDisplay != null) {
-            try {
-                virtualDisplay.release();
-            } catch (RuntimeException error) {
-                Log.w(TAG, "Unable to release virtual display", error);
-            }
-            virtualDisplay = null;
-        }
         releaseRecorderResources();
         if (projection != null) {
             try {
@@ -411,17 +361,6 @@ final class ScreenRecorder {
         videoOutputTrack = pendingVideoTrack;
     }
 
-    private void detachCaptureSurface() {
-        if (virtualDisplay == null) {
-            return;
-        }
-        try {
-            virtualDisplay.setSurface(null);
-        } catch (RuntimeException error) {
-            Log.w(TAG, "Unable to detach the capture surface", error);
-        }
-    }
-
     private void releaseOutput() {
         if (recordingMuxer != null) {
             recordingMuxer.release();
@@ -479,15 +418,14 @@ final class ScreenRecorder {
     }
 
     private void prepareVideoRecorder(CaptureSize size) throws IOException {
-        videoRecorder = new VideoTrackRecorder(
+        videoRecorder = new PrimeCapVideoRecorder(
+                context,
                 size.width,
                 size.height,
                 size.videoBitrate,
-                videoCodec,
-                videoFrameRate,
-                size.sourceRefreshRate,
+                size.targetFrameRate,
                 getMaximumVideoFileSize(),
-                new VideoTrackRecorder.Listener() {
+                new PrimeCapVideoRecorder.Listener() {
                     @Override
                     public void onLimitReached() {
                         listener.onRecorderLimitReached();
@@ -498,12 +436,10 @@ final class ScreenRecorder {
                         listener.onRecorderError(error);
                     }
                 });
-        surface = videoRecorder.getInputSurface();
-        Log.i(TAG, "Video profile: canvas=" + size.width + "x" + size.height
-                + ", content=" + size.contentWidth + "x" + size.contentHeight
-                + ", frameRate=" + videoRecorder.getConfiguredFrameRate() + " fps"
-                + ", target=" + size.videoBitrate + " bps"
-                + (force16By9Letterboxing ? ", 16:9 letterbox" : ""));
+        videoRecorder.prepare();
+        Log.i(TAG, "PrimeCap H.264 profile: maximum=" + Math.max(size.width, size.height)
+                + ", frameRate=" + size.targetFrameRate + " fps"
+                + ", target=" + size.videoBitrate + " bps");
     }
 
     private float getSourceRefreshRate() {
@@ -523,66 +459,11 @@ final class ScreenRecorder {
         }
     }
 
-    private CaptureSize awaitAccurateCaptureSize(CaptureSize fallback) throws IOException {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            return fallback;
-        }
-        try {
-            capturedSizeReady.await(CAPTURE_SIZE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException error) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while waiting for capture dimensions", error);
-        }
-        return latestAccurateCaptureSize(fallback);
-    }
-
-    private CaptureSize latestAccurateCaptureSize(CaptureSize fallback) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            return fallback;
-        }
-        long packedSize = capturedContentSize.get();
-        int width = (int) (packedSize >>> 32);
-        int height = (int) packedSize;
-        if (width <= 0 || height <= 0) {
-            return fallback;
-        }
-        return normalizeCaptureSize(
-                width,
-                height,
-                fallback.densityDpi);
-    }
-
-    private void reconfigureCaptureSize(CaptureSize accurateSize) throws IOException {
-        if (accurateSize.width == preparedCaptureSize.width
-                && accurateSize.height == preparedCaptureSize.height
-                && accurateSize.videoBitrate == preparedCaptureSize.videoBitrate
-                && accurateSize.targetFrameRate == preparedCaptureSize.targetFrameRate) {
-            preparedCaptureSize = accurateSize;
-            return;
-        }
-        virtualDisplay.setSurface(null);
-        releaseRecorderResources();
-        prepareVideoRecorder(accurateSize);
-        virtualDisplay.resize(
-                accurateSize.width,
-                accurateSize.height,
-                accurateSize.densityDpi);
-        if (started) {
-            virtualDisplay.setSurface(surface);
-        }
-        preparedCaptureSize = accurateSize;
-    }
-
-    private static long packSize(int width, int height) {
-        return ((long) width << 32) | (height & 0xffffffffL);
-    }
-
     private void releaseRecorderResources() {
         if (videoRecorder != null) {
             videoRecorder.release();
             videoRecorder = null;
         }
-        surface = null;
     }
 
     private void disableAudio(Exception error) {

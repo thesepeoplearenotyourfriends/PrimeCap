@@ -1,6 +1,7 @@
 .gradle/
 .idea/
 local.properties
+app/scrcpy/build/
 build/
 app/build/
 captures/

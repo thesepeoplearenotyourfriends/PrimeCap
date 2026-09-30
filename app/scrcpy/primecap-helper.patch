@@ -1,0 +1,73 @@
+--- a/server/src/main/java/com/genymobile/scrcpy/Server.java
++++ b/server/src/main/java/com/genymobile/scrcpy/Server.java
+@@ -225,6 +225,11 @@
+     }
+ 
+     private static void internalMain(String... args) throws Exception {
++        if (args.length > 0 && "primecap".equals(args[0])) {
++            PrimeCapServer.run(args);
++            return;
++        }
++
+         Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+         Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+             Ln.e("Exception on thread " + t, e);
+--- a/server/src/main/java/com/genymobile/scrcpy/device/Streamer.java
++++ b/server/src/main/java/com/genymobile/scrcpy/device/Streamer.java
+@@ -12,7 +12,9 @@
+ import java.nio.ByteOrder;
+ import java.util.Arrays;
+ 
+-public final class Streamer {
++import com.genymobile.scrcpy.video.VideoPacketSink;
++
++public final class Streamer implements VideoPacketSink {
+ 
+     private static final long PACKET_FLAG_CONFIG = 1L << 63;
+     private static final long PACKET_FLAG_KEY_FRAME = 1L << 62;
+--- a/server/src/main/java/com/genymobile/scrcpy/video/SurfaceEncoder.java
++++ b/server/src/main/java/com/genymobile/scrcpy/video/SurfaceEncoder.java
+@@ -5,7 +5,7 @@
+ import com.genymobile.scrcpy.Options;
+ import com.genymobile.scrcpy.device.ConfigurationException;
+ import com.genymobile.scrcpy.device.Size;
+-import com.genymobile.scrcpy.device.Streamer;
++
+ import com.genymobile.scrcpy.util.Codec;
+ import com.genymobile.scrcpy.util.CodecOption;
+ import com.genymobile.scrcpy.util.CodecUtils;
+@@ -37,7 +37,7 @@
+     private static final int MAX_CONSECUTIVE_ERRORS = 3;
+ 
+     private final SurfaceCapture capture;
+-    private final Streamer streamer;
++    private final VideoPacketSink streamer;
+     private final String encoderName;
+     private final List<CodecOption> codecOptions;
+     private final int videoBitRate;
+@@ -52,7 +52,7 @@
+ 
+     private final CaptureReset reset = new CaptureReset();
+ 
+-    public SurfaceEncoder(SurfaceCapture capture, Streamer streamer, Options options) {
++    public SurfaceEncoder(SurfaceCapture capture, VideoPacketSink streamer, Options options) {
+         this.capture = capture;
+         this.streamer = streamer;
+         this.videoBitRate = options.getVideoBitRate();
+@@ -194,12 +194,15 @@
+         return 0;
+     }
+ 
+-    private void encode(MediaCodec codec, Streamer streamer) throws IOException {
++    private void encode(MediaCodec codec, VideoPacketSink streamer) throws IOException {
+         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+ 
+         boolean eos;
+         do {
+             int outputBufferId = codec.dequeueOutputBuffer(bufferInfo, -1);
++            if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
++                streamer.writeVideoFormat(codec.getOutputFormat());
++            }
+             try {
+                 eos = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+                 // On EOS, there might be data or not, depending on bufferInfo.size
