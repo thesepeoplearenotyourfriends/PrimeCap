@@ -52,6 +52,10 @@ android {
         compose true
     }
 
+    sourceSets {
+        main.assets.srcDir("${projectDir}/scrcpy/build/assets")
+    }
+
     dependenciesInfo {
         includeInApk = false
         includeInBundle = false
@@ -64,9 +68,13 @@ tasks.register('buildPrimeCapVideoDaemon', Exec) {
     inputs.dir("${projectDir}/scrcpy/overlay")
     inputs.file("${projectDir}/scrcpy/build.sh")
     outputs.file("${projectDir}/scrcpy/build/primecap-video-daemon")
+    outputs.file("${projectDir}/scrcpy/build/assets/primecap-relay")
     commandLine 'bash', "${projectDir}/scrcpy/build.sh"
 }
 
+tasks.named('preBuild').configure {
+    dependsOn tasks.named('buildPrimeCapVideoDaemon')
+}
 
 dependencies {
     implementation 'androidx.activity:activity-compose:1.13.0'
