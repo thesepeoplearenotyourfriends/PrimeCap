@@ -16,8 +16,13 @@ adb shell 'chmod 0644 /data/local/tmp/primecap-video-daemon && CLASSPATH=/data/l
 Keep that `adb shell` process running while using PrimeCap. The daemon binds the
 local abstract socket `primecap_video_daemon`, accepts one recording session at
 a time, and returns to its accept loop after `STOP`. It must be launched directly
-by `adb shell`; neither the APK nor `su` starts, copies, or changes the identity
-of the daemon.
+by `adb shell`; the APK does not start or change the identity of the daemon.
+
+The build also packages a disposable `primecap-relay` in the APK. For each
+recording, PrimeCap stages and launches it with PHH-su, exchanges the protocol
+only over the child process's stdin/stdout, and then terminates it. The relay's
+stdout contains only bytes copied from the daemon socket; all relay diagnostics
+are written to stderr.
 
 For each session the APK sends `START` with max size, bitrate, fps, and
 orientation. The daemon responds with the existing framed `FORMAT`, `SAMPLE`,

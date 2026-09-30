@@ -421,6 +421,7 @@ final class ScreenRecorder {
 
     private void prepareVideoRecorder(CaptureSize size) throws IOException {
         videoRecorder = new PrimeCapVideoRecorder(
+                context,
                 size.width,
                 size.height,
                 size.videoBitrate,

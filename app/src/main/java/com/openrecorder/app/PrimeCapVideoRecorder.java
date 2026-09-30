@@ -1,16 +1,18 @@
 package com.openrecorder.app;
 
+import android.content.Context;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
-import android.net.LocalSocket;
-import android.net.LocalSocketAddress;
 import android.util.Log;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -25,7 +27,8 @@ final class PrimeCapVideoRecorder {
     }
 
     private static final String TAG = "PrimeCapVideo";
-    private static final String DAEMON_SOCKET = "primecap_video_daemon";
+    private static final String RELAY_ASSET = "primecap-relay";
+    private static final String RELAY_PATH = "/data/local/tmp/primecap-relay";
     private static final int MAGIC = 0x50434150;
     private static final int PROTOCOL_VERSION = 3;
     private static final int COMMAND_START = 1;
@@ -38,7 +41,9 @@ final class PrimeCapVideoRecorder {
     private static final long START_TIMEOUT_MS = 12_000L;
     private static final long STOP_TIMEOUT_MS = 8_000L;
     private static final long SOURCE_CLOCK_TOLERANCE_NANOS = 30_000_000_000L;
+    private static final int RELAY_LOG_LIMIT = 16 * 1024;
 
+    private final Context context;
     private final int maxSize;
     private final int bitRate;
     private final int frameRate;
@@ -53,8 +58,10 @@ final class PrimeCapVideoRecorder {
 
     private RecordingMuxer.Track outputTrack;
     private RecordingTimeline timeline;
-    private LocalSocket socket;
+    private Process relayProcess;
     private Thread receiverThread;
+    private File relayFile;
+    private final StringBuilder recentRelayErrors = new StringBuilder();
     private volatile DataOutputStream daemonControl;
     private volatile boolean stopRequested;
     private volatile boolean released;
@@ -67,8 +74,9 @@ final class PrimeCapVideoRecorder {
     private long lastWrittenPresentationTimeUs = -1L;
     private long encodedBytesWritten;
 
-    PrimeCapVideoRecorder(int width, int height, int bitRate,
+    PrimeCapVideoRecorder(Context context, int width, int height, int bitRate,
             int frameRate, int recordingOrientation, long maximumFileSize, Listener listener) {
+        this.context = context.getApplicationContext();
         this.maxSize = Math.max(width, height);
         this.bitRate = bitRate;
         this.frameRate = frameRate;
@@ -78,7 +86,9 @@ final class PrimeCapVideoRecorder {
     }
 
     synchronized void prepare() throws IOException {
-        // The video daemon is installed and started independently from the APK.
+        if (relayFile == null) {
+            relayFile = deployRelay();
+        }
     }
 
     synchronized void setOutputTrack(RecordingMuxer.Track track) {
@@ -101,17 +111,17 @@ final class PrimeCapVideoRecorder {
             ready = formatReady.await(START_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
-            closeSockets();
+            terminateRelay();
             throw new IOException("Interrupted while starting PrimeCap video", error);
         }
         if (!ready) {
-            closeSockets();
+            terminateRelay();
             throw new VideoDaemonUnavailableException(
                     "Video daemon unavailable: timed out waiting for video format");
         }
         Exception startupFailure = failure.get();
         if (startupFailure != null) {
-            closeSockets();
+            terminateRelay();
             if (startupFailure instanceof VideoDaemonUnavailableException) {
                 throw (VideoDaemonUnavailableException) startupFailure;
             }
@@ -163,7 +173,7 @@ final class PrimeCapVideoRecorder {
             throw new IOException("Interrupted while stopping PrimeCap video", error);
         }
         if (!completed) {
-            closeSockets();
+            terminateRelay();
             throw new IOException("Timed out while stopping the PrimeCap video daemon");
         }
         Exception receiverFailure = failure.get();
@@ -176,23 +186,17 @@ final class PrimeCapVideoRecorder {
         released = true;
         timelineReady.countDown();
         requestStop();
-        closeSockets();
+        terminateRelay();
     }
 
     private void receive() {
         boolean cleanEnd = false;
         try {
-            socket = new LocalSocket();
-            try {
-                socket.connect(new LocalSocketAddress(
-                        DAEMON_SOCKET, LocalSocketAddress.Namespace.ABSTRACT));
-            } catch (IOException error) {
-                throw new VideoDaemonUnavailableException(
-                        "Video daemon unavailable; start primecap-video-daemon from adb shell",
-                        error);
-            }
-            daemonControl = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-            DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+            launchRelay();
+            daemonControl = new DataOutputStream(
+                    new BufferedOutputStream(relayProcess.getOutputStream()));
+            DataInputStream input = new DataInputStream(
+                    new BufferedInputStream(relayProcess.getInputStream()));
             daemonControl.writeInt(MAGIC);
             daemonControl.writeInt(PROTOCOL_VERSION);
             daemonControl.writeByte(COMMAND_START);
@@ -234,7 +238,7 @@ final class PrimeCapVideoRecorder {
             }
         } catch (Exception error) {
             if (!released) {
-                recordFailure(error);
+                recordFailure(withRelayDiagnostics(error));
             }
         } finally {
             if (!cleanEnd && !released && failure.get() == null) {
@@ -242,7 +246,7 @@ final class PrimeCapVideoRecorder {
             }
             formatReady.countDown();
             outputTrack.finish();
-            closeSockets();
+            terminateRelay();
             receiverFinished.countDown();
         }
     }
@@ -345,14 +349,122 @@ final class PrimeCapVideoRecorder {
         }
     }
 
-    private synchronized void closeSockets() {
-        if (socket != null) {
-            try {
-                socket.close();
-            } catch (IOException ignored) {
+    private void launchRelay() throws IOException {
+        String command = "CLASSPATH=" + shellQuote(relayFile.getAbsolutePath())
+                + " app_process / com.genymobile.scrcpy.Server primecap-relay";
+        relayProcess = new ProcessBuilder("su", "-c", command).start();
+        drainRelayErrors(relayProcess.getErrorStream());
+    }
+
+    private File deployRelay() throws IOException {
+        File source = new File(context.getCodeCacheDir(), RELAY_ASSET + ".stage");
+        try (InputStream input = context.getAssets().open(RELAY_ASSET);
+                FileOutputStream output = new FileOutputStream(source)) {
+            byte[] buffer = new byte[32 * 1024];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                output.write(buffer, 0, count);
             }
-            socket = null;
+            output.getFD().sync();
         }
+        String temporaryPath = RELAY_PATH + ".new";
+        String install = "cp " + shellQuote(source.getAbsolutePath()) + " "
+                + shellQuote(temporaryPath) + " && chmod 0644 " + shellQuote(temporaryPath)
+                + " && mv " + shellQuote(temporaryPath) + " " + shellQuote(RELAY_PATH);
+        Process process = new ProcessBuilder("su", "-c", install).start();
+        String errors = readText(process.getErrorStream());
+        try {
+            if (process.waitFor() != 0) {
+                throw new IOException("Unable to stage PrimeCap relay: " + errors.trim());
+            }
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+            throw new IOException("Interrupted while staging PrimeCap relay", error);
+        } finally {
+            if (!source.delete()) {
+                Log.w(TAG, "Unable to remove temporary relay asset");
+            }
+        }
+        return new File(RELAY_PATH);
+    }
+
+    private void drainRelayErrors(InputStream stream) {
+        Thread logger = new Thread(() -> {
+            byte[] buffer = new byte[1024];
+            try {
+                int count;
+                while ((count = stream.read(buffer)) != -1) {
+                    String message = new String(buffer, 0, count);
+                    synchronized (recentRelayErrors) {
+                        recentRelayErrors.append(message);
+                        int excess = recentRelayErrors.length() - RELAY_LOG_LIMIT;
+                        if (excess > 0) {
+                            recentRelayErrors.delete(0, excess);
+                        }
+                    }
+                    Log.w(TAG, "Relay stderr: " + message.trim());
+                }
+            } catch (IOException ignored) {
+                // Relay teardown closes stderr.
+            }
+        }, "PrimeCapRelayDiagnostics");
+        logger.setDaemon(true);
+        logger.start();
+    }
+
+    private IOException withRelayDiagnostics(Exception cause) {
+        String diagnostics;
+        synchronized (recentRelayErrors) {
+            diagnostics = recentRelayErrors.toString().trim();
+        }
+        String message = "Video daemon unavailable through relay"
+                + (diagnostics.isEmpty() ? "" : ": " + diagnostics);
+        Log.e(TAG, message, cause);
+        return new VideoDaemonUnavailableException(message, cause);
+    }
+
+    private synchronized void terminateRelay() {
+        daemonControl = null;
+        Process process = relayProcess;
+        relayProcess = null;
+        if (process == null) {
+            return;
+        }
+        try {
+            process.getOutputStream().close();
+        } catch (IOException ignored) {
+        }
+        try {
+            if (process.waitFor(500, TimeUnit.MILLISECONDS)) {
+                return;
+            }
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        }
+        process.destroy();
+        try {
+            if (!process.waitFor(1, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+            }
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+        }
+    }
+
+    private static String readText(InputStream input) throws IOException {
+        StringBuilder output = new StringBuilder();
+        byte[] buffer = new byte[1024];
+        int count;
+        while ((count = input.read(buffer)) != -1) {
+            output.append(new String(buffer, 0, count));
+        }
+        return output.toString();
+    }
+
+    private static String shellQuote(String value) {
+        return "'" + value.replace("'", "'\\''") + "'";
     }
 
     private static byte[] readBytes(DataInputStream input, int length) throws IOException {
