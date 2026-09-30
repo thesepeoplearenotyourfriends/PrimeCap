@@ -52,10 +52,27 @@ android {
         compose true
     }
 
+    sourceSets {
+        main.assets.srcDir("${projectDir}/scrcpy/build/assets")
+    }
+
     dependenciesInfo {
         includeInApk = false
         includeInBundle = false
     }
+}
+
+tasks.register('buildPrimeCapHelper', Exec) {
+    inputs.file("${projectDir}/scrcpy/scrcpy-3.3.4.tar.gz")
+    inputs.file("${projectDir}/scrcpy/primecap-helper.patch")
+    inputs.dir("${projectDir}/scrcpy/overlay")
+    inputs.file("${projectDir}/scrcpy/build.sh")
+    outputs.file("${projectDir}/scrcpy/build/assets/primecap-server")
+    commandLine 'bash', "${projectDir}/scrcpy/build.sh"
+}
+
+tasks.named('preBuild').configure {
+    dependsOn tasks.named('buildPrimeCapHelper')
 }
 
 dependencies {
