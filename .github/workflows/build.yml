@@ -31,7 +31,7 @@ jobs:
           packages: ''
 
       - name: Install Android SDK platforms and helper build tools
-        run: sdkmanager "platforms;android-37" "platforms;android-35" "build-tools;35.0.0"
+        run: sdkmanager "platforms;android-37.0" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Build performance APK
         run: ./gradlew assemblePerformance
