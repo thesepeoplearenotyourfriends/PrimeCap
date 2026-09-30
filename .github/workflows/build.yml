@@ -7,6 +7,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -30,12 +33,29 @@ jobs:
       - name: Install Android SDK platform
         run: sdkmanager "platforms;android-37.0"
 
-      - name: Build development APK
-        run: ./gradlew assembleDevelopment
+      - name: Build performance APK
+        run: ./gradlew assemblePerformance
 
       - name: Upload PrimeCap APK
         uses: actions/upload-artifact@v4
         with:
-          name: PrimeCap-development-APK
-          path: app/build/outputs/apk/development/app-development.apk
+          name: PrimeCap-performance-APK
+          path: app/build/outputs/apk/performance/app-performance.apk
           if-no-files-found: error
+
+      - name: Prepare release APK
+        if: github.event_name != 'pull_request'
+        run: cp app/build/outputs/apk/performance/app-performance.apk PrimeCap.apk
+
+      - name: Publish moving release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view latest-primecap >/dev/null 2>&1; then
+            gh release create latest-primecap \
+              --title "Latest PrimeCap build" \
+              --notes "This release is automatically updated with the latest successful PrimeCap build."
+          fi
+          gh release upload latest-primecap PrimeCap.apk --clobber
+          gh release edit latest-primecap --latest
