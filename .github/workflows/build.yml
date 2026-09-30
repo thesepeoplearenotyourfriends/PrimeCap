@@ -28,7 +28,7 @@ jobs:
           packages: ''
 
       - name: Install Android SDK platform
-        run: sdkmanager "platforms;android-37"
+        run: sdkmanager "platforms;android-37.0"
 
       - name: Build development APK
         run: ./gradlew assembleDevelopment
