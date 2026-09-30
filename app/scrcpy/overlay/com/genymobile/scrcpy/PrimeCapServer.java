@@ -12,9 +12,8 @@ import com.genymobile.scrcpy.wrappers.ServiceManager;
 
 import android.media.MediaCodec;
 import android.media.MediaFormat;
+import android.net.LocalServerSocket;
 import android.net.LocalSocket;
-import android.net.LocalSocketAddress;
-import android.system.Os;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -24,10 +23,13 @@ import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** PrimeCap-only entry point: privileged H.264 display capture over one local socket. */
+/** Persistent shell-context H.264 display capture daemon over one local socket. */
 final class PrimeCapServer {
     private static final int MAGIC = 0x50434150; // PCAP
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
+    private static final String SOCKET_NAME = "primecap_video_daemon";
+    private static final int COMMAND_START = 1;
+    private static final int COMMAND_STOP = 2;
     private static final int TYPE_FORMAT = 1;
     private static final int TYPE_SAMPLE = 2;
     private static final int TYPE_END = 3;
@@ -39,48 +41,56 @@ final class PrimeCapServer {
 
     private PrimeCapServer() {}
 
-    static void dropRootPrivileges() throws Exception {
-        if (android.os.Process.myUid() == 0) {
-            Os.setuid(2000);
+    static void run(String... args) throws Exception {
+        if (args.length != 1) {
+            throw new IllegalArgumentException("primecap-daemon accepts no arguments");
+        }
+
+        // Apply framework workarounds once while this process still has the exact
+        // context inherited from adb shell. Every recording session reuses it.
+        Workarounds.apply();
+        LocalServerSocket server = new LocalServerSocket(SOCKET_NAME);
+        System.out.println("PrimeCap video daemon ready on @" + SOCKET_NAME
+                + " (pid=" + android.os.Process.myPid()
+                + ", uid=" + android.os.Process.myUid() + ")");
+        while (true) {
+            LocalSocket client = server.accept();
+            try {
+                runSession(client);
+            } catch (Exception error) {
+                System.err.println("PrimeCap video session failed: " + error.getMessage());
+                error.printStackTrace(System.err);
+            } finally {
+                try {
+                    client.close();
+                } catch (IOException ignored) {
+                }
+            }
         }
     }
 
-    static void run(String... args) throws Exception {
-        if (args.length != 6) {
-            throw new IllegalArgumentException(
-                    "primecap requires socket, max-size, bitrate, max-fps and recording-orientation");
-        }
-        String socketName = args[1];
-        int maxSize = positiveInt("max-size", args[2]);
-        int bitRate = positiveInt("bitrate", args[3]);
-        float maxFps = Float.parseFloat(args[4]);
-        if (!(maxFps > 0) || maxFps > 240) {
-            throw new IllegalArgumentException("Invalid max-fps");
-        }
-        int recordingOrientation = Integer.parseInt(args[5]);
-        if (recordingOrientation < ORIENTATION_AUTOMATIC
-                || recordingOrientation > ORIENTATION_LANDSCAPE) {
-            throw new IllegalArgumentException("Invalid recording-orientation");
-        }
-
-        Workarounds.apply();
-        String captureOrientation = resolveCaptureOrientation(recordingOrientation);
-
-        // Parse only fixed video options. This branch never creates scrcpy audio,
-        // control, DesktopConnection, recorder or transport objects.
-        Options options = Options.parse(BuildConfig.VERSION_NAME,
-                "video=true", "audio=false", "control=false",
-                "video_codec=h264", "video_source=display", "display_id=0",
-                "max_size=" + maxSize, "video_bit_rate=" + bitRate,
-                "max_fps=" + maxFps, "send_device_meta=false",
-                "send_codec_meta=false", "send_frame_meta=false", "cleanup=false",
-                "capture_orientation=" + captureOrientation);
-
-        LocalSocket socket = new LocalSocket();
-        socket.connect(new LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT));
+    private static void runSession(LocalSocket socket) throws Exception {
         socket.setSoTimeout(0);
         DataOutputStream output = new DataOutputStream(socket.getOutputStream());
         DataInputStream input = new DataInputStream(socket.getInputStream());
+        if (input.readInt() != MAGIC || input.readInt() != VERSION) {
+            throw new IOException("Unsupported PrimeCap client protocol");
+        }
+        if (input.readUnsignedByte() != COMMAND_START) {
+            throw new IOException("Expected START command");
+        }
+        int maxSize = positiveInt("max-size", input.readInt());
+        int bitRate = positiveInt("bitrate", input.readInt());
+        float maxFps = input.readFloat();
+        if (!(maxFps > 0) || maxFps > 240) {
+            throw new IllegalArgumentException("Invalid fps");
+        }
+        int recordingOrientation = input.readInt();
+        if (recordingOrientation < ORIENTATION_AUTOMATIC
+                || recordingOrientation > ORIENTATION_LANDSCAPE) {
+            throw new IllegalArgumentException("Invalid orientation");
+        }
+
         output.writeInt(MAGIC);
         output.writeInt(VERSION);
         output.writeInt(android.os.Process.myPid());
@@ -88,46 +98,66 @@ final class PrimeCapServer {
         output.flush();
 
         PrimeCapSink sink = new PrimeCapSink(output);
-        SurfaceEncoder encoder = new SurfaceEncoder(new ScreenCapture(null, options), sink, options);
-        CountDownLatch finished = new CountDownLatch(1);
-        AtomicBoolean stopRequested = new AtomicBoolean();
-        encoder.start(fatalError -> finished.countDown());
-        Thread stopReader = new Thread(() -> {
-            try {
-                input.readByte();
-            } catch (IOException ignored) {
-                // Closing the owner socket is also a stop request.
-            }
-            stopRequested.set(true);
-            encoder.stop();
-        }, "primecap-stop");
-        stopReader.setDaemon(true);
-        stopReader.start();
-
         try {
-            finished.await();
-            if (stopRequested.get()) {
-                sink.writeEnd();
-            } else {
-                sink.writeError("Privileged display encoder stopped unexpectedly");
+            Options options = createOptions(maxSize, bitRate, maxFps, recordingOrientation);
+            SurfaceEncoder encoder = new SurfaceEncoder(new ScreenCapture(null, options), sink, options);
+            CountDownLatch finished = new CountDownLatch(1);
+            AtomicBoolean stopRequested = new AtomicBoolean();
+            encoder.start(fatalError -> finished.countDown());
+            Thread stopReader = new Thread(() -> {
+                try {
+                    int command = input.readUnsignedByte();
+                    if (command != COMMAND_STOP) {
+                        sink.writeError("Unknown daemon command: " + command);
+                    }
+                } catch (IOException ignored) {
+                    // Closing the session socket is also a STOP request.
+                }
+                stopRequested.set(true);
+                encoder.stop();
+            }, "primecap-stop");
+            stopReader.setDaemon(true);
+            stopReader.start();
+
+            try {
+                finished.await();
+                if (stopRequested.get()) {
+                    sink.writeEnd();
+                } else {
+                    sink.writeError("Display encoder stopped unexpectedly");
+                }
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                encoder.stop();
+                sink.writeError("Video daemon session interrupted");
+            } finally {
+                encoder.stop();
+                encoder.join();
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            encoder.stop();
-            sink.writeError("Helper interrupted");
-        } finally {
-            encoder.stop();
-            encoder.join();
-            socket.close();
+        } catch (Exception error) {
+            sink.writeError(error.getMessage() == null
+                    ? error.getClass().getSimpleName() : error.getMessage());
+            throw error;
         }
     }
 
-    private static int positiveInt(String name, String value) {
-        int parsed = Integer.parseInt(value);
-        if (parsed <= 0) {
+    private static Options createOptions(int maxSize, int bitRate, float maxFps,
+            int recordingOrientation) throws Exception {
+        String captureOrientation = resolveCaptureOrientation(recordingOrientation);
+        return Options.parse(BuildConfig.VERSION_NAME,
+                "video=true", "audio=false", "control=false",
+                "video_codec=h264", "video_source=display", "display_id=0",
+                "max_size=" + maxSize, "video_bit_rate=" + bitRate,
+                "max_fps=" + maxFps, "send_device_meta=false",
+                "send_codec_meta=false", "send_frame_meta=false", "cleanup=false",
+                "capture_orientation=" + captureOrientation);
+    }
+
+    private static int positiveInt(String name, int value) {
+        if (value <= 0) {
             throw new IllegalArgumentException("Invalid " + name);
         }
-        return parsed;
+        return value;
     }
 
     private static String resolveCaptureOrientation(int requestedOrientation) {
@@ -152,16 +182,11 @@ final class PrimeCapServer {
 
     private static String orientationName(int rotation) {
         switch (rotation) {
-            case 0:
-                return "0";
-            case 1:
-                return "90";
-            case 2:
-                return "180";
-            case 3:
-                return "270";
-            default:
-                throw new AssertionError("Invalid rotation: " + rotation);
+            case 0: return "0";
+            case 1: return "90";
+            case 2: return "180";
+            case 3: return "270";
+            default: throw new AssertionError("Invalid rotation: " + rotation);
         }
     }
 

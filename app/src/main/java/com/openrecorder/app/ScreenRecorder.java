@@ -165,7 +165,7 @@ final class ScreenRecorder {
         prepareOutput();
         started = true;
 
-        // Root authorization, helper startup, and FORMAT negotiation are preparation,
+        // Daemon connection and FORMAT negotiation are preparation,
         // not recorded time. Arm the shared timeline only once video is usable.
         videoRecorder.start();
         timeline = new RecordingTimeline(System.nanoTime());
@@ -421,7 +421,6 @@ final class ScreenRecorder {
 
     private void prepareVideoRecorder(CaptureSize size) throws IOException {
         videoRecorder = new PrimeCapVideoRecorder(
-                context,
                 size.width,
                 size.height,
                 size.videoBitrate,

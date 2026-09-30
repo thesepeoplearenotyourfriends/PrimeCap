@@ -708,12 +708,23 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             }
             failedRecorder.release();
         }
-        runOnMainThread(() -> Toast.makeText(
-                this,
-                R.string.recording_failed,
-                Toast.LENGTH_LONG).show());
+        int message = containsVideoDaemonUnavailable(error)
+                ? R.string.video_daemon_unavailable
+                : R.string.recording_failed;
+        runOnMainThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show());
         notificationManager.notify(SAVED_NOTIFICATION_ID, createErrorNotification());
         finishService();
+    }
+
+    private static boolean containsVideoDaemonUnavailable(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof VideoDaemonUnavailableException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private void finishService() {
