@@ -5,11 +5,13 @@ reviewable helper-mode overlay. `build.sh` extracts the archive, applies
 `primecap-helper.patch`, copies the new helper sources, and invokes upstream's
 `server/build_without_gradle.sh` with Android platform/build-tools 35.
 
-The helper is launched only by PrimeCap as root:
+PrimeCap uses root only to stage the helper in `/data/local/tmp`. The helper then
+drops to Android's shell UID before initializing the Android framework or encoder:
 
 ```
-CLASSPATH=<extracted-primecap-server> app_process / com.genymobile.scrcpy.Server \
-  primecap <abstract-socket-name> <max-size> <bitrate> <max-fps>
+CLASSPATH=/data/local/tmp/primecap-server app_process / com.genymobile.scrcpy.Server \
+  primecap <abstract-socket-name> <max-size> <bitrate> <max-fps> \
+  <recording-orientation>
 ```
 
 This branch opens no desktop connection and constructs no scrcpy audio,

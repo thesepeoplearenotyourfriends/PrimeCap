@@ -1,16 +1,20 @@
 package com.genymobile.scrcpy;
 
 import com.genymobile.scrcpy.device.Size;
+import com.genymobile.scrcpy.device.DisplayInfo;
+import com.genymobile.scrcpy.device.Orientation;
 import com.genymobile.scrcpy.util.Codec;
 import com.genymobile.scrcpy.video.ScreenCapture;
 import com.genymobile.scrcpy.video.SurfaceEncoder;
 import com.genymobile.scrcpy.video.VideoCodec;
 import com.genymobile.scrcpy.video.VideoPacketSink;
+import com.genymobile.scrcpy.wrappers.ServiceManager;
 
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
+import android.system.Os;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -23,18 +27,28 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** PrimeCap-only entry point: privileged H.264 display capture over one local socket. */
 final class PrimeCapServer {
     private static final int MAGIC = 0x50434150; // PCAP
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int TYPE_FORMAT = 1;
     private static final int TYPE_SAMPLE = 2;
     private static final int TYPE_END = 3;
     private static final int TYPE_ERROR = 4;
     private static final int MAX_PACKET_SIZE = 16 * 1024 * 1024;
+    private static final int ORIENTATION_AUTOMATIC = 0;
+    private static final int ORIENTATION_PORTRAIT = 1;
+    private static final int ORIENTATION_LANDSCAPE = 2;
 
     private PrimeCapServer() {}
 
+    static void dropRootPrivileges() throws Exception {
+        if (android.os.Process.myUid() == 0) {
+            Os.setuid(2000);
+        }
+    }
+
     static void run(String... args) throws Exception {
-        if (args.length != 5) {
-            throw new IllegalArgumentException("primecap requires socket, max-size, bitrate and max-fps");
+        if (args.length != 6) {
+            throw new IllegalArgumentException(
+                    "primecap requires socket, max-size, bitrate, max-fps and recording-orientation");
         }
         String socketName = args[1];
         int maxSize = positiveInt("max-size", args[2]);
@@ -43,6 +57,14 @@ final class PrimeCapServer {
         if (!(maxFps > 0) || maxFps > 240) {
             throw new IllegalArgumentException("Invalid max-fps");
         }
+        int recordingOrientation = Integer.parseInt(args[5]);
+        if (recordingOrientation < ORIENTATION_AUTOMATIC
+                || recordingOrientation > ORIENTATION_LANDSCAPE) {
+            throw new IllegalArgumentException("Invalid recording-orientation");
+        }
+
+        Workarounds.apply();
+        String captureOrientation = resolveCaptureOrientation(recordingOrientation);
 
         // Parse only fixed video options. This branch never creates scrcpy audio,
         // control, DesktopConnection, recorder or transport objects.
@@ -51,9 +73,9 @@ final class PrimeCapServer {
                 "video_codec=h264", "video_source=display", "display_id=0",
                 "max_size=" + maxSize, "video_bit_rate=" + bitRate,
                 "max_fps=" + maxFps, "send_device_meta=false",
-                "send_codec_meta=false", "send_frame_meta=false", "cleanup=false");
+                "send_codec_meta=false", "send_frame_meta=false", "cleanup=false",
+                "capture_orientation=" + captureOrientation);
 
-        Workarounds.apply();
         LocalSocket socket = new LocalSocket();
         socket.connect(new LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT));
         socket.setSoTimeout(0);
@@ -61,6 +83,8 @@ final class PrimeCapServer {
         DataInputStream input = new DataInputStream(socket.getInputStream());
         output.writeInt(MAGIC);
         output.writeInt(VERSION);
+        output.writeInt(android.os.Process.myPid());
+        output.writeInt(android.os.Process.myUid());
         output.flush();
 
         PrimeCapSink sink = new PrimeCapSink(output);
@@ -106,11 +130,48 @@ final class PrimeCapServer {
         return parsed;
     }
 
+    private static String resolveCaptureOrientation(int requestedOrientation) {
+        if (requestedOrientation == ORIENTATION_AUTOMATIC) {
+            return "@";
+        }
+
+        DisplayInfo displayInfo = ServiceManager.getDisplayManager().getDisplayInfo(0);
+        if (displayInfo == null) {
+            throw new IllegalStateException("Main display is unavailable");
+        }
+        Size size = displayInfo.getSize();
+        boolean currentPortrait = size.getHeight() >= size.getWidth();
+        boolean wantPortrait = requestedOrientation == ORIENTATION_PORTRAIT;
+        Orientation current = Orientation.fromRotation(displayInfo.getRotation());
+        int captureRotation = current.getRotation();
+        if (currentPortrait != wantPortrait) {
+            captureRotation = (captureRotation + 1) % 4;
+        }
+        return "@" + orientationName(captureRotation);
+    }
+
+    private static String orientationName(int rotation) {
+        switch (rotation) {
+            case 0:
+                return "0";
+            case 1:
+                return "90";
+            case 2:
+                return "180";
+            case 3:
+                return "270";
+            default:
+                throw new AssertionError("Invalid rotation: " + rotation);
+        }
+    }
+
     private static final class PrimeCapSink implements VideoPacketSink {
         private final DataOutputStream output;
         private int width;
         private int height;
         private boolean formatSent;
+        private byte[] pendingCsd0 = new byte[0];
+        private byte[] pendingCsd1 = new byte[0];
 
         PrimeCapSink(DataOutputStream output) {
             this.output = output;
@@ -123,8 +184,10 @@ final class PrimeCapServer {
 
         @Override
         public synchronized void writeVideoHeader(Size size) {
-            width = size.getWidth();
-            height = size.getHeight();
+            if (!formatSent) {
+                width = size.getWidth();
+                height = size.getHeight();
+            }
         }
 
         @Override
@@ -135,8 +198,9 @@ final class PrimeCapServer {
             byte[] bytes = new byte[packet.remaining()];
             packet.get(bytes);
             if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-                if (!formatSent) {
-                    writeFormat(bytes, new byte[0]);
+                if (!formatSent && bytes.length > 0) {
+                    pendingCsd0 = concatenate(pendingCsd0, bytes);
+                    maybeWriteFormat();
                 }
                 return;
             }
@@ -158,18 +222,33 @@ final class PrimeCapServer {
 
         @Override
         public synchronized void writeVideoFormat(MediaFormat format) throws IOException {
+            if (formatSent) {
+                return;
+            }
+            if (format.containsKey(MediaFormat.KEY_WIDTH)) {
+                width = format.getInteger(MediaFormat.KEY_WIDTH);
+            }
+            if (format.containsKey(MediaFormat.KEY_HEIGHT)) {
+                height = format.getInteger(MediaFormat.KEY_HEIGHT);
+            }
             byte[] csd0 = copyBuffer(format.getByteBuffer("csd-0"));
             byte[] csd1 = copyBuffer(format.getByteBuffer("csd-1"));
-            writeFormat(csd0, csd1);
+            if (csd0.length > 0) {
+                pendingCsd0 = csd0;
+                pendingCsd1 = csd1;
+            }
+            maybeWriteFormat();
         }
 
-        private void writeFormat(byte[] csd0, byte[] csd1) throws IOException {
-            if (formatSent) {
-                throw new IOException("Video format changed during recording");
-            }
+        private void maybeWriteFormat() throws IOException {
+            byte[] csd0 = pendingCsd0;
+            byte[] csd1 = pendingCsd1;
             int csdLength = csd0.length + csd1.length;
-            if (width <= 0 || height <= 0 || csd0.length == 0 || csdLength > MAX_PACKET_SIZE - 16) {
-                throw new IOException("Invalid H.264 output format");
+            if (width <= 0 || height <= 0 || !hasH264ParameterSets(csd0, csd1)) {
+                return;
+            }
+            if (csdLength > MAX_PACKET_SIZE - 16) {
+                throw new IOException("H.264 codec configuration is too large");
             }
             output.writeByte(TYPE_FORMAT);
             output.writeInt(16 + csdLength);
@@ -181,6 +260,36 @@ final class PrimeCapServer {
             output.write(csd1);
             output.flush();
             formatSent = true;
+        }
+
+        private static boolean hasH264ParameterSets(byte[] first, byte[] second) {
+            int types = parameterSetTypes(first) | parameterSetTypes(second);
+            return (types & 1) != 0 && (types & 2) != 0;
+        }
+
+        private static int parameterSetTypes(byte[] data) {
+            int types = 0;
+            for (int i = 0; i + 3 < data.length; ++i) {
+                int startCodeLength = data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1
+                        ? 3
+                        : i + 4 < data.length && data[i] == 0 && data[i + 1] == 0
+                                && data[i + 2] == 0 && data[i + 3] == 1 ? 4 : 0;
+                if (startCodeLength > 0 && i + startCodeLength < data.length) {
+                    int nalType = data[i + startCodeLength] & 0x1f;
+                    if (nalType == 7) {
+                        types |= 1;
+                    } else if (nalType == 8) {
+                        types |= 2;
+                    }
+                }
+            }
+            return types;
+        }
+
+        private static byte[] concatenate(byte[] first, byte[] second) {
+            byte[] combined = Arrays.copyOf(first, first.length + second.length);
+            System.arraycopy(second, 0, combined, first.length, second.length);
+            return combined;
         }
 
         private static byte[] copyBuffer(ByteBuffer source) {

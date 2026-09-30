@@ -163,11 +163,13 @@ final class ScreenRecorder {
         }
         prepare();
         prepareOutput();
-        timeline = new RecordingTimeline(System.nanoTime());
         started = true;
 
-        // Wait for privileged video FORMAT before audio may submit samples to the muxer.
-        videoRecorder.start(timeline);
+        // Root authorization, helper startup, and FORMAT negotiation are preparation,
+        // not recorded time. Arm the shared timeline only once video is usable.
+        videoRecorder.start();
+        timeline = new RecordingTimeline(System.nanoTime());
+        videoRecorder.arm(timeline);
         if (audioRecorder != null) {
             try {
                 audioRecorder.start(timeline);
@@ -424,6 +426,7 @@ final class ScreenRecorder {
                 size.height,
                 size.videoBitrate,
                 size.targetFrameRate,
+                recordingOrientation,
                 getMaximumVideoFileSize(),
                 new PrimeCapVideoRecorder.Listener() {
                     @Override
