@@ -426,6 +426,7 @@ final class ScreenRecorder {
                 size.height,
                 size.videoBitrate,
                 size.targetFrameRate,
+                recordingOrientation,
                 getMaximumVideoFileSize(),
                 new PrimeCapVideoRecorder.Listener() {
                     @Override

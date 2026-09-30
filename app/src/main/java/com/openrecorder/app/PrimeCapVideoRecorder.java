@@ -50,6 +50,7 @@ final class PrimeCapVideoRecorder {
     private final int maxSize;
     private final int bitRate;
     private final int frameRate;
+    private final int recordingOrientation;
     private final long maximumFileSize;
     private final Listener listener;
     private final AtomicReference<Exception> failure = new AtomicReference<>();
@@ -80,11 +81,12 @@ final class PrimeCapVideoRecorder {
     private long encodedBytesWritten;
 
     PrimeCapVideoRecorder(Context context, int width, int height, int bitRate,
-            int frameRate, long maximumFileSize, Listener listener) {
+            int frameRate, int recordingOrientation, long maximumFileSize, Listener listener) {
         this.context = context.getApplicationContext();
         this.maxSize = Math.max(width, height);
         this.bitRate = bitRate;
         this.frameRate = frameRate;
+        this.recordingOrientation = RecordingOptions.normalizeOrientation(recordingOrientation);
         this.maximumFileSize = maximumFileSize;
         this.listener = listener;
     }
@@ -342,7 +344,8 @@ final class PrimeCapVideoRecorder {
         String command = "CLASSPATH=" + shellQuote(helperFile.getAbsolutePath())
                 + " app_process / com.genymobile.scrcpy.Server primecap "
                 + socketName + " " + maxSize + " " + bitRate + " "
-                + String.format(Locale.US, "%.3f", (float) frameRate);
+                + String.format(Locale.US, "%.3f", (float) frameRate) + " "
+                + recordingOrientation;
         helperProcess = new ProcessBuilder("su", "-c", command)
                 .redirectErrorStream(true)
                 .start();

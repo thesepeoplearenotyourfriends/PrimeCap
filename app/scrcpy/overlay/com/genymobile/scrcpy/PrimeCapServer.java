@@ -1,11 +1,14 @@
 package com.genymobile.scrcpy;
 
 import com.genymobile.scrcpy.device.Size;
+import com.genymobile.scrcpy.device.DisplayInfo;
+import com.genymobile.scrcpy.device.Orientation;
 import com.genymobile.scrcpy.util.Codec;
 import com.genymobile.scrcpy.video.ScreenCapture;
 import com.genymobile.scrcpy.video.SurfaceEncoder;
 import com.genymobile.scrcpy.video.VideoCodec;
 import com.genymobile.scrcpy.video.VideoPacketSink;
+import com.genymobile.scrcpy.wrappers.ServiceManager;
 
 import android.media.MediaCodec;
 import android.media.MediaFormat;
@@ -30,6 +33,9 @@ final class PrimeCapServer {
     private static final int TYPE_END = 3;
     private static final int TYPE_ERROR = 4;
     private static final int MAX_PACKET_SIZE = 16 * 1024 * 1024;
+    private static final int ORIENTATION_AUTOMATIC = 0;
+    private static final int ORIENTATION_PORTRAIT = 1;
+    private static final int ORIENTATION_LANDSCAPE = 2;
 
     private PrimeCapServer() {}
 
@@ -40,8 +46,9 @@ final class PrimeCapServer {
     }
 
     static void run(String... args) throws Exception {
-        if (args.length != 5) {
-            throw new IllegalArgumentException("primecap requires socket, max-size, bitrate and max-fps");
+        if (args.length != 6) {
+            throw new IllegalArgumentException(
+                    "primecap requires socket, max-size, bitrate, max-fps and recording-orientation");
         }
         String socketName = args[1];
         int maxSize = positiveInt("max-size", args[2]);
@@ -50,6 +57,14 @@ final class PrimeCapServer {
         if (!(maxFps > 0) || maxFps > 240) {
             throw new IllegalArgumentException("Invalid max-fps");
         }
+        int recordingOrientation = Integer.parseInt(args[5]);
+        if (recordingOrientation < ORIENTATION_AUTOMATIC
+                || recordingOrientation > ORIENTATION_LANDSCAPE) {
+            throw new IllegalArgumentException("Invalid recording-orientation");
+        }
+
+        Workarounds.apply();
+        String captureOrientation = resolveCaptureOrientation(recordingOrientation);
 
         // Parse only fixed video options. This branch never creates scrcpy audio,
         // control, DesktopConnection, recorder or transport objects.
@@ -59,9 +74,8 @@ final class PrimeCapServer {
                 "max_size=" + maxSize, "video_bit_rate=" + bitRate,
                 "max_fps=" + maxFps, "send_device_meta=false",
                 "send_codec_meta=false", "send_frame_meta=false", "cleanup=false",
-                "capture_orientation=@");
+                "capture_orientation=" + captureOrientation);
 
-        Workarounds.apply();
         LocalSocket socket = new LocalSocket();
         socket.connect(new LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT));
         socket.setSoTimeout(0);
@@ -114,6 +128,41 @@ final class PrimeCapServer {
             throw new IllegalArgumentException("Invalid " + name);
         }
         return parsed;
+    }
+
+    private static String resolveCaptureOrientation(int requestedOrientation) {
+        if (requestedOrientation == ORIENTATION_AUTOMATIC) {
+            return "@";
+        }
+
+        DisplayInfo displayInfo = ServiceManager.getDisplayManager().getDisplayInfo(0);
+        if (displayInfo == null) {
+            throw new IllegalStateException("Main display is unavailable");
+        }
+        Size size = displayInfo.getSize();
+        boolean currentPortrait = size.getHeight() >= size.getWidth();
+        boolean wantPortrait = requestedOrientation == ORIENTATION_PORTRAIT;
+        Orientation current = Orientation.fromRotation(displayInfo.getRotation());
+        int captureRotation = current.getRotation();
+        if (currentPortrait != wantPortrait) {
+            captureRotation = (captureRotation + 1) % 4;
+        }
+        return "@" + orientationName(captureRotation);
+    }
+
+    private static String orientationName(int rotation) {
+        switch (rotation) {
+            case 0:
+                return "0";
+            case 1:
+                return "90";
+            case 2:
+                return "180";
+            case 3:
+                return "270";
+            default:
+                throw new AssertionError("Invalid rotation: " + rotation);
+        }
     }
 
     private static final class PrimeCapSink implements VideoPacketSink {

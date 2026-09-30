@@ -10,7 +10,8 @@ drops to Android's shell UID before initializing the Android framework or encode
 
 ```
 CLASSPATH=/data/local/tmp/primecap-server app_process / com.genymobile.scrcpy.Server \
-  primecap <abstract-socket-name> <max-size> <bitrate> <max-fps>
+  primecap <abstract-socket-name> <max-size> <bitrate> <max-fps> \
+  <recording-orientation>
 ```
 
 This branch opens no desktop connection and constructs no scrcpy audio,
