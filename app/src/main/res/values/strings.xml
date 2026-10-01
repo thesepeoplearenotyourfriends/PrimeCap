@@ -125,11 +125,11 @@
     <string name="countdown_10_seconds">10 seconds</string>
     <string name="recording_timeout_label">Recording timeout</string>
     <string name="recording_timeout_off">Off</string>
-    <string name="recording_timeout_1_minute">1 minute</string>
-    <string name="recording_timeout_5_minutes">5 minutes</string>
-    <string name="recording_timeout_10_minutes">10 minutes</string>
-    <string name="recording_timeout_30_minutes">30 minutes</string>
-    <string name="recording_timeout_60_minutes">60 minutes</string>
+    <string name="recording_timeout_minute">1 minute</string>
+    <string name="recording_timeout_minutes">%1$d minutes</string>
+    <string name="recording_timeout_off_hint">Off</string>
+    <string name="recording_timeout_dialog_message">Enter a whole number of minutes. Leave blank or enter 0 for Off.</string>
+    <string name="recording_timeout_invalid">Enter a valid whole number.</string>
     <string name="naming_pattern_label">File naming pattern</string>
     <string name="naming_pattern_day_month_year">dd-mm-yyyy_hh-mm-ss</string>
     <string name="naming_pattern_month_day_year">mm-dd-yyyy_hh-mm-ss</string>

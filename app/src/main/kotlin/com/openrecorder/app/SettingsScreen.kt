@@ -3,9 +3,12 @@
 package com.openrecorder.app
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.ContextWrapper
 import android.os.Build
+import android.text.InputType
+import android.widget.EditText
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import android.widget.Toast
@@ -90,7 +93,7 @@ internal fun SettingsScreen(
     force16By9Letterboxing: Boolean,
     selectedVideoBitrateIndex: Int,
     selectedCountdownIndex: Int,
-    selectedRecordingTimeoutIndex: Int,
+    recordingTimeoutMinutes: Int,
     selectedNamingPatternIndex: Int,
     selectedOrientationIndex: Int,
     optionsEnabled: Boolean,
@@ -103,7 +106,7 @@ internal fun SettingsScreen(
     onForce16By9LetterboxingChanged: (Boolean) -> Unit,
     onVideoBitrateSelected: (Int) -> Unit,
     onCountdownSelected: (Int) -> Unit,
-    onRecordingTimeoutSelected: (Int) -> Unit,
+    onRecordingTimeoutChanged: (Int) -> Unit,
     onNamingPatternSelected: (Int) -> Unit,
     onOrientationSelected: (Int) -> Unit,
     onViewOnGitHub: () -> Unit,
@@ -254,16 +257,6 @@ internal fun SettingsScreen(
             context.getString(R.string.countdown_10_seconds),
         )
     }
-    val recordingTimeoutOptions = remember(context) {
-        listOf(
-            context.getString(R.string.recording_timeout_off),
-            context.getString(R.string.recording_timeout_1_minute),
-            context.getString(R.string.recording_timeout_5_minutes),
-            context.getString(R.string.recording_timeout_10_minutes),
-            context.getString(R.string.recording_timeout_30_minutes),
-            context.getString(R.string.recording_timeout_60_minutes),
-        )
-    }
     val namingPatternOptions = remember(context) {
         listOf(
             context.getString(R.string.naming_pattern_day_month_year),
@@ -399,15 +392,24 @@ internal fun SettingsScreen(
                             onExpandedChange = { settingsPopupExpanded = it },
                             onSelected = onCountdownSelected,
                         )
-                        SelectablePreference(
+                        ArrowPreference(
                             title = stringResource(R.string.recording_timeout_label),
-                            items = recordingTimeoutOptions,
-                            selectedIndex = selectedRecordingTimeoutIndex,
+                            summary = when (recordingTimeoutMinutes) {
+                                0 -> stringResource(R.string.recording_timeout_off)
+                                1 -> stringResource(R.string.recording_timeout_minute)
+                                else -> stringResource(
+                                    R.string.recording_timeout_minutes,
+                                    recordingTimeoutMinutes,
+                                )
+                            },
                             enabled = optionsEnabled,
-                            predictiveBackEnabled = enablePredictiveBack,
-                            dismissRequestKey = popupDismissRequestKey,
-                            onExpandedChange = { settingsPopupExpanded = it },
-                            onSelected = onRecordingTimeoutSelected,
+                            onClick = {
+                                showRecordingTimeoutDialog(
+                                    context = context,
+                                    currentMinutes = recordingTimeoutMinutes,
+                                    onChanged = onRecordingTimeoutChanged,
+                                )
+                            },
                         )
                         SelectablePreference(
                             title = stringResource(R.string.naming_pattern_label),
@@ -508,6 +510,39 @@ internal fun SettingsScreen(
         settingsPopupExpanded = false
         popupDismissRequestKey++
     }
+}
+
+private fun showRecordingTimeoutDialog(
+    context: Context,
+    currentMinutes: Int,
+    onChanged: (Int) -> Unit,
+) {
+    val input = EditText(context).apply {
+        inputType = InputType.TYPE_CLASS_NUMBER
+        hint = context.getString(R.string.recording_timeout_off_hint)
+        setText(currentMinutes.takeIf { it > 0 }?.toString().orEmpty())
+        selectAll()
+    }
+    val dialog = AlertDialog.Builder(context)
+        .setTitle(R.string.recording_timeout_label)
+        .setMessage(R.string.recording_timeout_dialog_message)
+        .setView(input)
+        .setNegativeButton(android.R.string.cancel, null)
+        .setPositiveButton(android.R.string.ok, null)
+        .create()
+    dialog.setOnShowListener {
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val text = input.text.toString().trim()
+            val minutes = if (text.isEmpty()) 0 else text.toIntOrNull()
+            if (minutes == null) {
+                input.error = context.getString(R.string.recording_timeout_invalid)
+            } else {
+                onChanged(minutes)
+                dialog.dismiss()
+            }
+        }
+    }
+    dialog.show()
 }
 
 @Composable

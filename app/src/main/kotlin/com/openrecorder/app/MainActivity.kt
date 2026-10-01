@@ -203,9 +203,7 @@ class MainActivity : ComponentActivity() {
                             selectedCountdownIndex = COUNTDOWN_OPTIONS
                                 .indexOf(settingsState.selectedCountdownSeconds)
                                 .coerceAtLeast(0),
-                            selectedRecordingTimeoutIndex = RECORDING_TIMEOUT_OPTIONS
-                                .indexOf(settingsState.recordingTimeoutMinutes)
-                                .coerceAtLeast(0),
+                            recordingTimeoutMinutes = settingsState.recordingTimeoutMinutes,
                             selectedNamingPatternIndex = NAMING_PATTERNS
                                 .indexOf(settingsState.selectedNamingPattern)
                                 .coerceAtLeast(0),
@@ -298,11 +296,8 @@ class MainActivity : ComponentActivity() {
                                     recorderPreferences.saveCountdownSeconds(countdownSeconds)
                                 }
                             },
-                            onRecordingTimeoutSelected = { index ->
+                            onRecordingTimeoutChanged = { timeoutMinutes ->
                                 if (optionsEnabled) {
-                                    val timeoutMinutes = RECORDING_TIMEOUT_OPTIONS.getOrElse(index) {
-                                        RecordingOptions.DEFAULT_RECORDING_TIMEOUT_MINUTES
-                                    }
                                     updateRecordingSettingsUiState {
                                         it.copy(recordingTimeoutMinutes = timeoutMinutes)
                                     }
@@ -766,15 +761,6 @@ class MainActivity : ComponentActivity() {
             RecordingOptions.COUNTDOWN_3_SECONDS,
             RecordingOptions.COUNTDOWN_5_SECONDS,
             RecordingOptions.COUNTDOWN_10_SECONDS,
-        )
-
-        val RECORDING_TIMEOUT_OPTIONS = listOf(
-            RecordingOptions.RECORDING_TIMEOUT_OFF,
-            RecordingOptions.RECORDING_TIMEOUT_1_MINUTE,
-            RecordingOptions.RECORDING_TIMEOUT_5_MINUTES,
-            RecordingOptions.RECORDING_TIMEOUT_10_MINUTES,
-            RecordingOptions.RECORDING_TIMEOUT_30_MINUTES,
-            RecordingOptions.RECORDING_TIMEOUT_60_MINUTES,
         )
 
         val NAMING_PATTERNS = listOf(

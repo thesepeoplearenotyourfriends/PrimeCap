@@ -24,13 +24,12 @@ public final class RecordingOptionsTest {
     }
 
     @Test
-    public void recordingTimeoutAcceptsOnlyAvailableWholeMinuteValues() {
-        int[] timeouts = {1, 5, 10, 30, 60};
+    public void recordingTimeoutAcceptsArbitraryNonnegativeWholeMinutes() {
+        int[] timeouts = {0, 1, 2, 37, 999, Integer.MAX_VALUE};
         for (int timeout : timeouts) {
             assertEquals(timeout, RecordingOptions.normalizeRecordingTimeoutMinutes(timeout));
         }
         assertEquals(0, RecordingOptions.normalizeRecordingTimeoutMinutes(-1));
-        assertEquals(0, RecordingOptions.normalizeRecordingTimeoutMinutes(2));
     }
 
     @Test

@@ -40,11 +40,6 @@ final class RecordingOptions {
     static final int DEFAULT_COUNTDOWN_SECONDS = COUNTDOWN_OFF;
 
     static final int RECORDING_TIMEOUT_OFF = 0;
-    static final int RECORDING_TIMEOUT_1_MINUTE = 1;
-    static final int RECORDING_TIMEOUT_5_MINUTES = 5;
-    static final int RECORDING_TIMEOUT_10_MINUTES = 10;
-    static final int RECORDING_TIMEOUT_30_MINUTES = 30;
-    static final int RECORDING_TIMEOUT_60_MINUTES = 60;
     static final int DEFAULT_RECORDING_TIMEOUT_MINUTES = RECORDING_TIMEOUT_OFF;
 
     static final int ORIENTATION_AUTOMATIC = 0;
@@ -114,14 +109,7 @@ final class RecordingOptions {
     }
 
     static int normalizeRecordingTimeoutMinutes(int value) {
-        if (value == RECORDING_TIMEOUT_1_MINUTE
-                || value == RECORDING_TIMEOUT_5_MINUTES
-                || value == RECORDING_TIMEOUT_10_MINUTES
-                || value == RECORDING_TIMEOUT_30_MINUTES
-                || value == RECORDING_TIMEOUT_60_MINUTES) {
-            return value;
-        }
-        return RECORDING_TIMEOUT_OFF;
+        return Math.max(RECORDING_TIMEOUT_OFF, value);
     }
 
     static int normalizeOrientation(int value) {
