@@ -55,8 +55,10 @@ final class PrimeCapVideoRecorder {
     private static final long FINAL_COUNTDOWN_NANOS = TimeUnit.SECONDS.toNanos(
             FINAL_COUNTDOWN_SECONDS);
     private static final long QUIET_PERIOD_NANOS = TimeUnit.SECONDS.toNanos(1L);
-    private static final long SYNC_FRAME_LEAD_NANOS = TimeUnit.MILLISECONDS.toNanos(100L);
+    private static final long SYNC_RETRY_NANOS = TimeUnit.SECONDS.toNanos(2L);
     private static final long KEYFRAME_TIMEOUT_MS = 30_000L;
+    private static final long MINIMUM_WARMUP_TIMEOUT_MS = 25_000L;
+    private static final long COUNTDOWN_TIMEOUT_MS = 10_000L;
     private static final long SOURCE_CLOCK_TOLERANCE_NANOS = 30_000_000_000L;
     private static final int RELAY_LOG_LIMIT = 16 * 1024;
 
@@ -74,6 +76,11 @@ final class PrimeCapVideoRecorder {
     private final CountDownLatch receiverFinished = new CountDownLatch(1);
     private final CountDownLatch timelineReady = new CountDownLatch(1);
     private final CountDownLatch recordingBoundaryReady = new CountDownLatch(1);
+    private final CountDownLatch minimumWarmupReady = new CountDownLatch(1);
+    private final CountDownLatch readinessKeyframeReady = new CountDownLatch(1);
+    private final CountDownLatch countdownCleared = new CountDownLatch(1);
+    private final PrimeCapPreparationStages preparationStages = new PrimeCapPreparationStages(
+            MINIMUM_WARMUP_NANOS, SYNC_RETRY_NANOS, QUIET_PERIOD_NANOS);
 
     private RecordingMuxer.Track outputTrack;
     private RecordingTimeline timeline;
@@ -98,13 +105,10 @@ final class PrimeCapVideoRecorder {
     private long lastWrittenPresentationTimeUs = -1L;
     private long encodedBytesWritten;
     private long warmupStartedNanos;
-    private volatile long usableKeyframeNanos;
-    private volatile long recordingEligibleNanos;
     private long recordingBoundaryNanos;
     private long discardedSamples;
     private long discardedBytes;
     private boolean firstAcceptedSample = true;
-    private boolean syncFrameRequested;
 
     PrimeCapVideoRecorder(Context context, int width, int height, int bitRate, int videoCodec,
             int frameRate, int recordingOrientation, long maximumFileSize, Listener listener) {
@@ -177,12 +181,16 @@ final class PrimeCapVideoRecorder {
     }
 
     long awaitRecordingBoundary() throws IOException {
-        boolean ready;
         try {
-            ready = recordingBoundaryReady.await(
-                    (MINIMUM_WARMUP_SECONDS + FINAL_COUNTDOWN_SECONDS) * 1_000L
-                            + KEYFRAME_TIMEOUT_MS * 2L,
-                    TimeUnit.MILLISECONDS);
+            awaitPreparationStage(minimumWarmupReady, MINIMUM_WARMUP_TIMEOUT_MS,
+                    "minimum warmup");
+            awaitPreparationStage(readinessKeyframeReady, KEYFRAME_TIMEOUT_MS,
+                    "readiness keyframe");
+            awaitPreparationStage(countdownCleared, COUNTDOWN_TIMEOUT_MS,
+                    "final countdown");
+            awaitPreparationStage(recordingBoundaryReady,
+                    TimeUnit.NANOSECONDS.toMillis(QUIET_PERIOD_NANOS) + KEYFRAME_TIMEOUT_MS,
+                    "recording-boundary keyframe");
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while preparing PrimeCap video", error);
@@ -191,7 +199,7 @@ final class PrimeCapVideoRecorder {
         if (preparationFailure != null) {
             throw new IOException("Unable to prepare PrimeCap video", preparationFailure);
         }
-        if (!ready || recordingBoundaryNanos <= 0L) {
+        if (recordingBoundaryNanos <= 0L) {
             long elapsedNanos = warmupStartedNanos == 0L
                     ? 0L
                     : Math.max(0L, System.nanoTime() - warmupStartedNanos);
@@ -205,9 +213,22 @@ final class PrimeCapVideoRecorder {
                     + ", bitrate=" + bitRate + " bps");
             terminateRelay();
             terminateOwnedDaemon();
-            throw new IOException("Timed out waiting for a post-warmup video keyframe");
+            throw new IOException("Timed out preparing the recording boundary");
         }
         return recordingBoundaryNanos;
+    }
+
+    private void awaitPreparationStage(CountDownLatch latch, long timeoutMs, String stage)
+            throws InterruptedException, IOException {
+        if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            terminateRelay();
+            terminateOwnedDaemon();
+            throw new IOException("Timed out during PrimeCap " + stage);
+        }
+        Exception preparationFailure = failure.get();
+        if (preparationFailure != null) {
+            throw new IOException("Unable to prepare PrimeCap video", preparationFailure);
+        }
     }
 
     void pause() {
@@ -225,8 +246,10 @@ final class PrimeCapVideoRecorder {
     }
 
     synchronized void onPreparationOverlayCleared() {
-        if (!released && usableKeyframeNanos != 0L && recordingEligibleNanos == 0L) {
-            recordingEligibleNanos = System.nanoTime() + QUIET_PERIOD_NANOS;
+        long nowNanos = System.nanoTime();
+        if (!released && preparationStages.onCountdownCleared(nowNanos)) {
+            Log.i(TAG, "Final countdown ended at " + nowNanos + " ns; Toast cleared");
+            countdownCleared.countDown();
         }
     }
 
@@ -378,6 +401,7 @@ final class PrimeCapVideoRecorder {
         outputTrack.setFormat(format);
         formatReceived = true;
         warmupStartedNanos = System.nanoTime();
+        preparationStages.start(warmupStartedNanos);
         Log.i(TAG, "Daemon " + codecName() + " format: " + width + "x" + height);
         formatReady.countDown();
     }
@@ -396,31 +420,43 @@ final class PrimeCapVideoRecorder {
         long nowNanos = System.nanoTime();
         boolean keyFrame = (flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
         if (recordingBoundaryNanos == 0L) {
-            long warmupElapsedNanos = nowNanos - warmupStartedNanos;
-            if (usableKeyframeNanos == 0L
-                    && warmupElapsedNanos >= MINIMUM_WARMUP_NANOS
-                    && keyFrame) {
-                usableKeyframeNanos = nowNanos;
+            PrimeCapPreparationStages.Action action = preparationStages.onSample(
+                    nowNanos, keyFrame);
+            if (action == PrimeCapPreparationStages.Action.REQUEST_READINESS_SYNC) {
+                if (minimumWarmupReady.getCount() != 0L) {
+                    Log.i(TAG, "Minimum warmup completed after "
+                            + TimeUnit.NANOSECONDS.toMillis(nowNanos - warmupStartedNanos)
+                            + " ms");
+                    minimumWarmupReady.countDown();
+                }
+                requestSyncFrame("readiness", preparationStages.getReadinessRequestNanos());
+            } else if (action == PrimeCapPreparationStages.Action.START_COUNTDOWN) {
+                Log.i(TAG, "Readiness keyframe latency=" + TimeUnit.NANOSECONDS.toMillis(
+                        nowNanos - preparationStages.getReadinessRequestNanos()) + " ms");
+                Log.i(TAG, "Final countdown started at " + nowNanos + " ns");
+                readinessKeyframeReady.countDown();
                 listener.onFinalCountdownStarted(FINAL_COUNTDOWN_SECONDS);
+            } else if (action == PrimeCapPreparationStages.Action.REQUEST_FINAL_SYNC) {
+                requestSyncFrame("final recording boundary",
+                        preparationStages.getFinalRequestNanos());
             }
-            if (recordingEligibleNanos != 0L && !syncFrameRequested
-                    && nowNanos >= recordingEligibleNanos - SYNC_FRAME_LEAD_NANOS) {
-                requestSyncFrame();
-            }
-            if (recordingEligibleNanos == 0L
-                    || nowNanos < recordingEligibleNanos
-                    || !keyFrame) {
+            if (action != PrimeCapPreparationStages.Action.COMPLETE) {
                 discardedSamples++;
                 discardedBytes += sampleLength;
                 return;
             }
             recordingBoundaryNanos = nowNanos;
-            long readinessWaitNanos = Math.max(
-                    0L, usableKeyframeNanos - warmupStartedNanos - MINIMUM_WARMUP_NANOS);
-            long startKeyframeWaitNanos = Math.max(0L, nowNanos - recordingEligibleNanos);
+            long readinessWaitNanos = Math.max(0L,
+                    preparationStages.getCountdownStartedNanos()
+                            - preparationStages.getReadinessRequestNanos());
+            long startKeyframeWaitNanos = Math.max(0L,
+                    nowNanos - preparationStages.getFinalRequestNanos());
+            Log.i(TAG, "Final keyframe latency="
+                    + TimeUnit.NANOSECONDS.toMillis(startKeyframeWaitNanos) + " ms");
             Log.i(TAG, "PrimeCap warmup: duration="
                     + TimeUnit.NANOSECONDS.toMillis(
-                            usableKeyframeNanos - warmupStartedNanos) + " ms"
+                            preparationStages.getCountdownStartedNanos()
+                                    - warmupStartedNanos) + " ms"
                     + ", discardedSamples=" + discardedSamples
                     + ", discardedBytes=" + discardedBytes
                     + ", readinessKeyframeWait="
@@ -471,15 +507,16 @@ final class PrimeCapVideoRecorder {
         return videoCodec == RecordingOptions.VIDEO_CODEC_H265 ? "H.265" : "H.264";
     }
 
-    private synchronized void requestSyncFrame() throws IOException {
-        syncFrameRequested = true;
+    private synchronized void requestSyncFrame(String stage, long requestedAtNanos)
+            throws IOException {
         DataOutputStream control = daemonControl;
         if (control == null) {
             throw new IOException("PrimeCap daemon control channel is unavailable");
         }
         control.writeByte(COMMAND_REQUEST_SYNC_FRAME);
         control.flush();
-        Log.i(TAG, "Requested " + codecName() + " sync frame at final recording boundary");
+        Log.i(TAG, "Requested " + codecName() + " sync frame for " + stage
+                + " at " + requestedAtNanos + " ns");
     }
 
     private long adjustPresentationTime(long sourcePresentationTimeUs) {
@@ -507,6 +544,10 @@ final class PrimeCapVideoRecorder {
     private void recordFailure(Exception error) {
         if (failure.compareAndSet(null, error)) {
             formatReady.countDown();
+            minimumWarmupReady.countDown();
+            readinessKeyframeReady.countDown();
+            countdownCleared.countDown();
+            recordingBoundaryReady.countDown();
             try {
                 listener.onFailure(error);
             } catch (RuntimeException listenerError) {
@@ -562,7 +603,7 @@ final class PrimeCapVideoRecorder {
     }
 
     private void launchDaemon() throws IOException {
-        String command = "rm -f " + shellQuote(DAEMON_PID_PATH) + " && "
+        String command = PrimeCapDaemonLifecycle.cleanupCommand(DAEMON_PID_PATH) + " && "
                 + shellQuote(LAUNCHER_PATH) + " " + shellQuote(daemonFile.getAbsolutePath())
                 + " " + shellQuote(DAEMON_PID_PATH);
         daemonProcess = new ProcessBuilder("su", "-c", command).start();
@@ -578,26 +619,25 @@ final class PrimeCapVideoRecorder {
     private void waitForDaemonReady() throws IOException {
         long deadlineNanos = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(START_TIMEOUT_MS);
-        String readinessCommand = "pid=$(cat " + shellQuote(DAEMON_PID_PATH)
-                + " 2>/dev/null) || exit 1; case \"$pid\" in ''|*[!0-9]*) exit 1;; esac; "
-                + "printf '%s\\n' \"$pid\"; "
-                + "kill -0 \"$pid\" 2>/dev/null || exit 2; "
-                + "grep -q ' @primecap_video_daemon$' /proc/net/unix";
+        String readinessCommand = PrimeCapDaemonLifecycle.readinessCommand(
+                DAEMON_PID_PATH, START_TIMEOUT_MS);
+        Process readiness = new ProcessBuilder("su", "-c", readinessCommand)
+                .redirectErrorStream(true)
+                .start();
         try {
             while (System.nanoTime() < deadlineNanos) {
                 if (!daemonProcess.isAlive()) {
-                    throw daemonLaunchFailure("launcher exited with status "
-                            + daemonProcess.exitValue());
-                }
-                Process readiness = new ProcessBuilder("su", "-c", readinessCommand)
-                        .redirectErrorStream(true)
-                        .start();
-                long remainingNanos = deadlineNanos - System.nanoTime();
-                long waitMillis = Math.max(1L, Math.min(1_000L,
-                        TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
-                if (!readiness.waitFor(waitMillis, TimeUnit.MILLISECONDS)) {
                     readiness.destroyForcibly();
-                } else {
+                    int status = daemonProcess.exitValue();
+                    String reason = status == PrimeCapDaemonLifecycle.SOCKET_CLEAR_FAILURE
+                            ? "stale @primecap_video_daemon could not be cleared"
+                            : "launcher exited with status " + status;
+                    throw daemonLaunchFailure(reason);
+                }
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                long waitMillis = Math.max(1L, Math.min(50L,
+                        TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
+                if (readiness.waitFor(waitMillis, TimeUnit.MILLISECONDS)) {
                     String pidText = readText(readiness.getInputStream()).trim();
                     if (!pidText.isEmpty()) {
                         launchedDaemonPid = Integer.parseInt(pidText);
@@ -605,19 +645,27 @@ final class PrimeCapVideoRecorder {
                     if (readiness.exitValue() == 0) {
                         return;
                     }
-                    if (readiness.exitValue() == 2) {
+                    if (readiness.exitValue()
+                            == PrimeCapDaemonLifecycle.READINESS_PROCESS_EXITED) {
                         throw daemonLaunchFailure("launcher process exited before socket readiness");
                     }
+                    if (readiness.exitValue() == PrimeCapDaemonLifecycle.READINESS_TIMED_OUT) {
+                        throw daemonLaunchFailure("timed out waiting for @primecap_video_daemon");
+                    }
+                    throw daemonLaunchFailure("readiness probe exited with status "
+                            + readiness.exitValue());
                 }
-                Thread.sleep(50L);
             }
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
+            readiness.destroyForcibly();
             daemonProcess.destroyForcibly();
             throw new IOException("Interrupted while starting PrimeCap daemon", error);
         } catch (NumberFormatException error) {
+            readiness.destroyForcibly();
             throw daemonLaunchFailure("launcher published an invalid PID");
         }
+        readiness.destroyForcibly();
         throw daemonLaunchFailure("timed out waiting for @primecap_video_daemon");
     }
 
