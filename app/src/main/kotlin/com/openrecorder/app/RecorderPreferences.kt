@@ -98,15 +98,6 @@ internal class RecorderPreferences(context: Context) {
             .apply()
     }
 
-    fun loadForce16By9Letterboxing(): Boolean = preferences.getBoolean(
-        KEY_FORCE_16_BY_9_LETTERBOXING,
-        false,
-    )
-
-    fun saveForce16By9Letterboxing(value: Boolean) {
-        preferences.edit().putBoolean(KEY_FORCE_16_BY_9_LETTERBOXING, value).apply()
-    }
-
     fun loadCountdownSeconds(): Int = RecordingOptions.normalizeCountdownSeconds(
         preferences.getInt(KEY_COUNTDOWN_SECONDS, RecordingOptions.DEFAULT_COUNTDOWN_SECONDS),
     )
@@ -133,16 +124,6 @@ internal class RecorderPreferences(context: Context) {
             .apply()
     }
 
-    fun loadOrientation(): Int = RecordingOptions.normalizeOrientation(
-        preferences.getInt(KEY_ORIENTATION, RecordingOptions.DEFAULT_ORIENTATION),
-    )
-
-    fun saveOrientation(value: Int) {
-        preferences.edit()
-            .putInt(KEY_ORIENTATION, RecordingOptions.normalizeOrientation(value))
-            .apply()
-    }
-
     fun loadNamingPattern(): String = RecordingOptions.normalizeNamingPattern(
         preferences.getString(KEY_NAMING_PATTERN, RecordingOptions.DEFAULT_NAMING_PATTERN),
     )
@@ -163,10 +144,8 @@ internal class RecorderPreferences(context: Context) {
         const val KEY_VIDEO_BITRATE = "video_bitrate"
         const val KEY_VIDEO_RESOLUTION = "video_resolution"
         const val KEY_VIDEO_FRAME_RATE = "video_frame_rate"
-        const val KEY_FORCE_16_BY_9_LETTERBOXING = "force_16_by_9_letterboxing"
         const val KEY_COUNTDOWN_SECONDS = "countdown_seconds"
         const val KEY_RECORDING_TIMEOUT_MINUTES = "recording_timeout_minutes"
-        const val KEY_ORIENTATION = "recording_orientation"
         const val KEY_NAMING_PATTERN = "naming_pattern"
     }
 }

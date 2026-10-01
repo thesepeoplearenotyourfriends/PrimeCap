@@ -90,12 +90,10 @@ internal fun SettingsScreen(
     selectedSampleRateIndex: Int,
     selectedVideoResolutionIndex: Int,
     selectedVideoFrameRateIndex: Int,
-    force16By9Letterboxing: Boolean,
     selectedVideoBitrateIndex: Int,
     selectedCountdownIndex: Int,
     recordingTimeoutMinutes: Int,
     selectedNamingPatternIndex: Int,
-    selectedOrientationIndex: Int,
     optionsEnabled: Boolean,
     onThemeSelected: (Int) -> Unit,
     onEnablePredictiveBackChanged: (Boolean) -> Unit,
@@ -103,12 +101,10 @@ internal fun SettingsScreen(
     onSampleRateSelected: (Int) -> Unit,
     onVideoResolutionSelected: (Int) -> Unit,
     onVideoFrameRateSelected: (Int) -> Unit,
-    onForce16By9LetterboxingChanged: (Boolean) -> Unit,
     onVideoBitrateSelected: (Int) -> Unit,
     onCountdownSelected: (Int) -> Unit,
     onRecordingTimeoutChanged: (Int) -> Unit,
     onNamingPatternSelected: (Int) -> Unit,
-    onOrientationSelected: (Int) -> Unit,
     onViewOnGitHub: () -> Unit,
     onViewLicense: () -> Unit,
     onOpenExternalUrl: (String) -> Unit,
@@ -265,14 +261,6 @@ internal fun SettingsScreen(
             context.getString(R.string.naming_pattern_year_day_month),
         )
     }
-    val orientationOptions = remember(context) {
-        listOf(
-            context.getString(R.string.orientation_automatic),
-            context.getString(R.string.orientation_portrait),
-            context.getString(R.string.orientation_landscape),
-        )
-    }
-
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             modifier = Modifier.graphicsLayer {
@@ -363,15 +351,6 @@ internal fun SettingsScreen(
                             onExpandedChange = { settingsPopupExpanded = it },
                             onSelected = onSampleRateSelected,
                         )
-                        SwitchPreference(
-                            title = stringResource(R.string.force_16_by_9_letterboxing),
-                            summary = stringResource(
-                                R.string.force_16_by_9_letterboxing_summary,
-                            ),
-                            checked = force16By9Letterboxing,
-                            enabled = optionsEnabled,
-                            onCheckedChange = onForce16By9LetterboxingChanged,
-                        )
                         SelectablePreference(
                             title = stringResource(R.string.video_bitrate_label),
                             items = videoBitrateOptions,
@@ -420,16 +399,6 @@ internal fun SettingsScreen(
                             dismissRequestKey = popupDismissRequestKey,
                             onExpandedChange = { settingsPopupExpanded = it },
                             onSelected = onNamingPatternSelected,
-                        )
-                        SelectablePreference(
-                            title = stringResource(R.string.recording_orientation_label),
-                            items = orientationOptions,
-                            selectedIndex = selectedOrientationIndex,
-                            enabled = optionsEnabled,
-                            predictiveBackEnabled = enablePredictiveBack,
-                            dismissRequestKey = popupDismissRequestKey,
-                            onExpandedChange = { settingsPopupExpanded = it },
-                            onSelected = onOrientationSelected,
                         )
                     }
                 }
