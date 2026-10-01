@@ -21,6 +21,9 @@ int main(int argc, char *argv[]) {
     }
     const char *daemon = argv[1];
     const char *pid_file = argv[2];
+    if (unlink(pid_file) != 0 && errno != ENOENT) {
+        return report_error("clearing daemon pid");
+    }
 
     /* Resolve setcon while still root in phhsu_daemon, as in the proven prototype. */
     void *selinux = dlopen("libselinux.so", RTLD_NOW | RTLD_LOCAL);
@@ -64,6 +67,8 @@ int main(int argc, char *argv[]) {
     setenv("CLASSPATH", daemon, 1);
     char *const app_process_argv[] = {"app_process", "/", "com.genymobile.scrcpy.Server",
                                       "primecap-daemon", NULL};
+    printf("PrimeCap launcher exec (pid=%d)\n", getpid());
+    fflush(stdout);
     execv("/system/bin/app_process", app_process_argv);
     report_error("exec app_process");
     dlclose(selinux);
