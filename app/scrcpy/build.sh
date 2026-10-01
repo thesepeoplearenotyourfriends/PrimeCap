@@ -13,3 +13,4 @@ ANDROID_PLATFORM=35 ANDROID_BUILD_TOOLS=35.0.0 \
 cp "$BUILD/manual/scrcpy-server" "$BUILD/primecap-video-daemon"
 mkdir -p "$BUILD/assets"
 cp "$BUILD/manual/scrcpy-server" "$BUILD/assets/primecap-relay"
+cp "$BUILD/manual/scrcpy-server" "$BUILD/assets/primecap-video-daemon"

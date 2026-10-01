@@ -5,18 +5,21 @@ reviewable daemon-mode overlay. `build.sh` extracts the archive, applies the
 patch, copies the daemon sources, and invokes upstream's
 `server/build_without_gradle.sh` with Android platform/build-tools 35.
 
-Build and start the daemon from the host:
+Build the daemon and APK:
 
 ```sh
 ./gradlew buildPrimeCapVideoDaemon
-adb push app/scrcpy/build/primecap-video-daemon /data/local/tmp/primecap-video-daemon
-adb shell 'chmod 0644 /data/local/tmp/primecap-video-daemon && CLASSPATH=/data/local/tmp/primecap-video-daemon app_process / com.genymobile.scrcpy.Server primecap-daemon'
+./gradlew assembleDevelopment
 ```
 
-Keep that `adb shell` process running while using PrimeCap. The daemon binds the
+PrimeCap stages and starts the daemon through root when a recording begins. A
+small native launcher performs the verified `setgroups`, `setgid`, `setuid`,
+`setcon`, and `execve` sequence in that order. The daemon binds the
 local abstract socket `primecap_video_daemon`, accepts one recording session at
 a time, and returns to its accept loop after `STOP`. It must be launched directly
-by `adb shell`; the APK does not start or change the identity of the daemon.
+with the identity and SELinux context of a real adb shell. The app retains the
+root-launched process and stops only the
+exact daemon PID reported by the protocol when the recording ends.
 
 The build also packages a disposable `primecap-relay` in the APK. For each
 recording, PrimeCap stages and launches it with PHH-su, exchanges the protocol
