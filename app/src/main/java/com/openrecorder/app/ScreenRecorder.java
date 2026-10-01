@@ -31,7 +31,8 @@ final class ScreenRecorder {
         void onRecorderLimitReached();
         void onRecorderError(Exception error);
         void onAudioCaptureFailed();
-        void onPreparationWarmupStarted(int durationSeconds);
+        void onPreparationWarmupStarted();
+        void onPreparationFinalCountdownStarted(int durationSeconds);
     }
 
     private static final String TAG = "ScreenRecorder";
@@ -443,8 +444,13 @@ final class ScreenRecorder {
                 getMaximumVideoFileSize(),
                 new PrimeCapVideoRecorder.Listener() {
                     @Override
-                    public void onWarmupStarted(int durationSeconds) {
-                        listener.onPreparationWarmupStarted(durationSeconds);
+                    public void onWarmupStarted() {
+                        listener.onPreparationWarmupStarted();
+                    }
+
+                    @Override
+                    public void onFinalCountdownStarted(int durationSeconds) {
+                        listener.onPreparationFinalCountdownStarted(durationSeconds);
                     }
 
                     @Override

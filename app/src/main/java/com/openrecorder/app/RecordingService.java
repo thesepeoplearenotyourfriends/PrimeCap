@@ -782,21 +782,48 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     }
 
     @Override
-    public void onPreparationWarmupStarted(int durationSeconds) {
+    public void onPreparationWarmupStarted() {
+        runOnMainThread(this::startPreparationIndicator);
+    }
+
+    @Override
+    public void onPreparationFinalCountdownStarted(int durationSeconds) {
         runOnMainThread(() -> startPreparationCountdown(durationSeconds));
     }
 
-    private void startPreparationCountdown(int durationSeconds) {
+    private void startPreparationIndicator() {
         cancelPreparationCountdown();
         preparationCountdownToast = Toast.makeText(
                 this,
-                getString(R.string.preparing_recording_countdown, durationSeconds),
+                R.string.preparing_recording,
                 Toast.LENGTH_SHORT);
+        preparationCountdownTick = new Runnable() {
+            @Override
+            public void run() {
+                if (preparationCountdownTick != this || stopping.get() || finished.get()) {
+                    cancelPreparationCountdown();
+                    return;
+                }
+                preparationCountdownToast.show();
+                mainHandler.postDelayed(this, 1_000L);
+            }
+        };
+        preparationCountdownTick.run();
+    }
+
+    private void startPreparationCountdown(int durationSeconds) {
+        Runnable indicator = preparationCountdownTick;
+        if (indicator != null) {
+            mainHandler.removeCallbacks(indicator);
+        }
+        if (preparationCountdownToast == null) {
+            preparationCountdownToast = Toast.makeText(this, "", Toast.LENGTH_SHORT);
+        }
         final int[] seconds = {durationSeconds};
         preparationCountdownTick = new Runnable() {
             @Override
             public void run() {
-                if (preparationCountdownTick != this || seconds[0] <= 2
+                if (preparationCountdownTick != this || seconds[0] <= 1
                         || stopping.get() || finished.get()) {
                     cancelPreparationCountdown();
                     return;

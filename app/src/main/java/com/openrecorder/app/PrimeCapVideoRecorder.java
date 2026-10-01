@@ -22,7 +22,8 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Receives shell-daemon video output and writes it directly to RecordingMuxer. */
 final class PrimeCapVideoRecorder {
     interface Listener {
-        void onWarmupStarted(int durationSeconds);
+        void onWarmupStarted();
+        void onFinalCountdownStarted(int durationSeconds);
         void onLimitReached();
         void onFailure(Exception error);
     }
@@ -47,9 +48,12 @@ final class PrimeCapVideoRecorder {
     private static final long START_TIMEOUT_MS = 12_000L;
     private static final long STOP_TIMEOUT_MS = 8_000L;
     private static final long DAEMON_EXIT_TIMEOUT_MS = 2_000L;
-    static final int WARMUP_DURATION_SECONDS = 20;
-    private static final long WARMUP_DURATION_NANOS = TimeUnit.SECONDS.toNanos(
-            WARMUP_DURATION_SECONDS);
+    static final int MINIMUM_WARMUP_SECONDS = 20;
+    static final int FINAL_COUNTDOWN_SECONDS = 5;
+    private static final long MINIMUM_WARMUP_NANOS = TimeUnit.SECONDS.toNanos(
+            MINIMUM_WARMUP_SECONDS);
+    private static final long FINAL_COUNTDOWN_NANOS = TimeUnit.SECONDS.toNanos(
+            FINAL_COUNTDOWN_SECONDS);
     private static final long KEYFRAME_TIMEOUT_MS = 30_000L;
     private static final long SOURCE_CLOCK_TOLERANCE_NANOS = 30_000_000_000L;
     private static final int RELAY_LOG_LIMIT = 16 * 1024;
@@ -92,6 +96,8 @@ final class PrimeCapVideoRecorder {
     private long lastWrittenPresentationTimeUs = -1L;
     private long encodedBytesWritten;
     private long warmupStartedNanos;
+    private long usableKeyframeNanos;
+    private long recordingEligibleNanos;
     private long recordingBoundaryNanos;
     private long discardedSamples;
     private long discardedBytes;
@@ -171,7 +177,8 @@ final class PrimeCapVideoRecorder {
         boolean ready;
         try {
             ready = recordingBoundaryReady.await(
-                    WARMUP_DURATION_SECONDS * 1_000L + KEYFRAME_TIMEOUT_MS,
+                    (MINIMUM_WARMUP_SECONDS + FINAL_COUNTDOWN_SECONDS) * 1_000L
+                            + KEYFRAME_TIMEOUT_MS * 2L,
                     TimeUnit.MILLISECONDS);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
@@ -186,11 +193,11 @@ final class PrimeCapVideoRecorder {
                     ? 0L
                     : Math.max(0L, System.nanoTime() - warmupStartedNanos);
             Log.w(TAG, "PrimeCap warmup timed out: duration="
-                    + TimeUnit.NANOSECONDS.toMillis(WARMUP_DURATION_NANOS) + " ms"
+                    + TimeUnit.NANOSECONDS.toMillis(elapsedNanos) + " ms"
                     + ", discardedSamples=" + discardedSamples
                     + ", discardedBytes=" + discardedBytes
                     + ", keyframeWait=" + TimeUnit.NANOSECONDS.toMillis(
-                            Math.max(0L, elapsedNanos - WARMUP_DURATION_NANOS)) + " ms"
+                            Math.max(0L, elapsedNanos - MINIMUM_WARMUP_NANOS)) + " ms"
                     + ", codec=" + codecName()
                     + ", bitrate=" + bitRate + " bps");
             terminateRelay();
@@ -362,7 +369,7 @@ final class PrimeCapVideoRecorder {
         outputTrack.setFormat(format);
         formatReceived = true;
         warmupStartedNanos = System.nanoTime();
-        listener.onWarmupStarted(WARMUP_DURATION_SECONDS);
+        listener.onWarmupStarted();
         Log.i(TAG, "Daemon " + codecName() + " format: " + width + "x" + height);
         formatReady.countDown();
     }
@@ -382,18 +389,33 @@ final class PrimeCapVideoRecorder {
         boolean keyFrame = (flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
         if (recordingBoundaryNanos == 0L) {
             long warmupElapsedNanos = nowNanos - warmupStartedNanos;
-            if (warmupElapsedNanos < WARMUP_DURATION_NANOS || !keyFrame) {
+            if (usableKeyframeNanos == 0L
+                    && warmupElapsedNanos >= MINIMUM_WARMUP_NANOS
+                    && keyFrame) {
+                usableKeyframeNanos = nowNanos;
+                recordingEligibleNanos = nowNanos + FINAL_COUNTDOWN_NANOS;
+                listener.onFinalCountdownStarted(FINAL_COUNTDOWN_SECONDS);
+            }
+            if (usableKeyframeNanos == 0L || nowNanos < recordingEligibleNanos || !keyFrame) {
                 discardedSamples++;
                 discardedBytes += sampleLength;
                 return;
             }
             recordingBoundaryNanos = nowNanos;
-            long keyframeWaitNanos = Math.max(0L, warmupElapsedNanos - WARMUP_DURATION_NANOS);
+            long readinessWaitNanos = Math.max(
+                    0L, usableKeyframeNanos - warmupStartedNanos - MINIMUM_WARMUP_NANOS);
+            long startKeyframeWaitNanos = Math.max(0L, nowNanos - recordingEligibleNanos);
             Log.i(TAG, "PrimeCap warmup: duration="
-                    + TimeUnit.NANOSECONDS.toMillis(WARMUP_DURATION_NANOS) + " ms"
+                    + TimeUnit.NANOSECONDS.toMillis(
+                            usableKeyframeNanos - warmupStartedNanos) + " ms"
                     + ", discardedSamples=" + discardedSamples
                     + ", discardedBytes=" + discardedBytes
-                    + ", keyframeWait=" + TimeUnit.NANOSECONDS.toMillis(keyframeWaitNanos) + " ms"
+                    + ", readinessKeyframeWait="
+                    + TimeUnit.NANOSECONDS.toMillis(readinessWaitNanos) + " ms"
+                    + ", finalCountdown="
+                    + TimeUnit.NANOSECONDS.toMillis(FINAL_COUNTDOWN_NANOS) + " ms"
+                    + ", startKeyframeWait="
+                    + TimeUnit.NANOSECONDS.toMillis(startKeyframeWaitNanos) + " ms"
                     + ", codec=" + codecName()
                     + ", bitrate=" + bitRate + " bps");
             recordingBoundaryReady.countDown();
