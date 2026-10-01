@@ -29,11 +29,13 @@ public class PrimeCapDaemonLifecycleTest {
 
     @Test
     public void readinessRequiresPublishedPidToOwnNamedSocket() {
-        String command = PrimeCapDaemonLifecycle.readinessCommand("/tmp/daemon.pid");
+        String command = PrimeCapDaemonLifecycle.readinessCommand("/tmp/daemon.pid", 12_000L);
+        assertTrue(command.contains("while [ \"$i\" -lt 240 ]"));
         assertTrue(command.contains("kill -0 \"$pid\" 2>/dev/null || exit 2"));
-        assertTrue(command.contains("is_primecap \"$pid\" || exit 1"));
+        assertTrue(command.contains("if is_primecap \"$pid\""));
         assertTrue(command.contains("inode=$(socket_inode)"));
         assertTrue(command.contains("owns_socket \"$pid\" \"$inode\""));
+        assertTrue(command.endsWith("exit " + PrimeCapDaemonLifecycle.READINESS_TIMED_OUT));
         assertFalse(command.endsWith("grep -q ' @primecap_video_daemon$' /proc/net/unix"));
     }
 }

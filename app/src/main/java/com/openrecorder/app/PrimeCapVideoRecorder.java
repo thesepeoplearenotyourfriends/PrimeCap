@@ -619,25 +619,25 @@ final class PrimeCapVideoRecorder {
     private void waitForDaemonReady() throws IOException {
         long deadlineNanos = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(START_TIMEOUT_MS);
-        String readinessCommand = PrimeCapDaemonLifecycle.readinessCommand(DAEMON_PID_PATH);
+        String readinessCommand = PrimeCapDaemonLifecycle.readinessCommand(
+                DAEMON_PID_PATH, START_TIMEOUT_MS);
+        Process readiness = new ProcessBuilder("su", "-c", readinessCommand)
+                .redirectErrorStream(true)
+                .start();
         try {
             while (System.nanoTime() < deadlineNanos) {
                 if (!daemonProcess.isAlive()) {
+                    readiness.destroyForcibly();
                     int status = daemonProcess.exitValue();
                     String reason = status == PrimeCapDaemonLifecycle.SOCKET_CLEAR_FAILURE
                             ? "stale @primecap_video_daemon could not be cleared"
                             : "launcher exited with status " + status;
                     throw daemonLaunchFailure(reason);
                 }
-                Process readiness = new ProcessBuilder("su", "-c", readinessCommand)
-                        .redirectErrorStream(true)
-                        .start();
                 long remainingNanos = deadlineNanos - System.nanoTime();
-                long waitMillis = Math.max(1L, Math.min(1_000L,
+                long waitMillis = Math.max(1L, Math.min(50L,
                         TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
-                if (!readiness.waitFor(waitMillis, TimeUnit.MILLISECONDS)) {
-                    readiness.destroyForcibly();
-                } else {
+                if (readiness.waitFor(waitMillis, TimeUnit.MILLISECONDS)) {
                     String pidText = readText(readiness.getInputStream()).trim();
                     if (!pidText.isEmpty()) {
                         launchedDaemonPid = Integer.parseInt(pidText);
@@ -645,19 +645,27 @@ final class PrimeCapVideoRecorder {
                     if (readiness.exitValue() == 0) {
                         return;
                     }
-                    if (readiness.exitValue() == 2) {
+                    if (readiness.exitValue()
+                            == PrimeCapDaemonLifecycle.READINESS_PROCESS_EXITED) {
                         throw daemonLaunchFailure("launcher process exited before socket readiness");
                     }
+                    if (readiness.exitValue() == PrimeCapDaemonLifecycle.READINESS_TIMED_OUT) {
+                        throw daemonLaunchFailure("timed out waiting for @primecap_video_daemon");
+                    }
+                    throw daemonLaunchFailure("readiness probe exited with status "
+                            + readiness.exitValue());
                 }
-                Thread.sleep(50L);
             }
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
+            readiness.destroyForcibly();
             daemonProcess.destroyForcibly();
             throw new IOException("Interrupted while starting PrimeCap daemon", error);
         } catch (NumberFormatException error) {
+            readiness.destroyForcibly();
             throw daemonLaunchFailure("launcher published an invalid PID");
         }
+        readiness.destroyForcibly();
         throw daemonLaunchFailure("timed out waiting for @primecap_video_daemon");
     }
 

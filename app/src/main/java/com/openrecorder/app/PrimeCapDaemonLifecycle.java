@@ -3,6 +3,9 @@ package com.openrecorder.app;
 /** Shell-side lifecycle checks for the privileged PrimeCap daemon. */
 final class PrimeCapDaemonLifecycle {
     static final int SOCKET_CLEAR_FAILURE = 42;
+    static final int READINESS_PROCESS_EXITED = 2;
+    static final int READINESS_TIMED_OUT = 3;
+    private static final long READINESS_POLL_INTERVAL_MS = 50L;
     private static final String PROCESS_COMMAND =
             "app_process / com.genymobile.scrcpy.Server primecap-daemon ";
 
@@ -25,17 +28,20 @@ final class PrimeCapDaemonLifecycle {
         return command.toString();
     }
 
-    static String readinessCommand(String pidPath) {
+    static String readinessCommand(String pidPath, long timeoutMs) {
+        long attempts = Math.max(1L,
+                (timeoutMs + READINESS_POLL_INTERVAL_MS - 1L) / READINESS_POLL_INTERVAL_MS);
         return commonFunctions()
-                + "pid=$(cat " + shellQuote(pidPath)
-                + " 2>/dev/null) || exit 1; case \"$pid\" in ''|*[!0-9]*) exit 1;; esac; "
-                + "printf '%s\\n' \"$pid\"; "
-                + "kill -0 \"$pid\" 2>/dev/null || exit 2; "
+                + "i=0; published=''; while [ \"$i\" -lt " + attempts + " ]; do "
+                + "pid=$(cat " + shellQuote(pidPath) + " 2>/dev/null) || pid=''; "
+                + "case \"$pid\" in ''|*[!0-9]*) ;; *) "
+                + "if [ -z \"$published\" ]; then printf '%s\\n' \"$pid\"; published=1; fi; "
+                + "kill -0 \"$pid\" 2>/dev/null || exit " + READINESS_PROCESS_EXITED + "; "
                 // The launcher writes its PID immediately before exec, so a brief mismatch
                 // is expected. It is never enough to declare the socket ready.
-                + "is_primecap \"$pid\" || exit 1; "
-                + "inode=$(socket_inode) || exit 1; "
-                + "owns_socket \"$pid\" \"$inode\" || exit 1";
+                + "if is_primecap \"$pid\"; then inode=$(socket_inode) || inode=''; "
+                + "[ -n \"$inode\" ] && owns_socket \"$pid\" \"$inode\" && exit 0; fi;; esac; "
+                + "sleep 0.05; i=$((i+1)); done; exit " + READINESS_TIMED_OUT;
     }
 
     private static String commonFunctions() {
