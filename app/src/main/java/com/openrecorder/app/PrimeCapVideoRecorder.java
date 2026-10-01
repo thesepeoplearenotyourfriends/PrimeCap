@@ -399,9 +399,7 @@ final class PrimeCapVideoRecorder {
             throw new IOException("Invalid PrimeCap video codec configuration");
         }
         byte[] csd1 = readBytes(input, csd1Length);
-        String mimeType = videoCodec == RecordingOptions.VIDEO_CODEC_H265
-                ? MediaFormat.MIMETYPE_VIDEO_HEVC
-                : MediaFormat.MIMETYPE_VIDEO_AVC;
+        String mimeType = MediaFormat.MIMETYPE_VIDEO_AVC;
         MediaFormat format = MediaFormat.createVideoFormat(mimeType, width, height);
         format.setByteBuffer("csd-0", ByteBuffer.wrap(csd0));
         if (csd1.length > 0) {
@@ -513,7 +511,7 @@ final class PrimeCapVideoRecorder {
     }
 
     private String codecName() {
-        return videoCodec == RecordingOptions.VIDEO_CODEC_H265 ? "H.265" : "H.264";
+        return "H.264";
     }
 
     private synchronized void requestSyncFrame(String stage, long requestedAtNanos)

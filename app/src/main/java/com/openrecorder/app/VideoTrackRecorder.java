@@ -129,16 +129,6 @@ final class VideoTrackRecorder {
         this.listener = listener;
     }
 
-    static boolean isCodecSupported(int requestedCodec) {
-        String mimeType = mimeTypeForCodec(requestedCodec);
-        try {
-            return !encoderCandidates(mimeType).isEmpty();
-        } catch (RuntimeException error) {
-            Log.w(TAG, "Unable to query video encoder support", error);
-            return false;
-        }
-    }
-
     synchronized void prepare() throws IOException {
         if (prepared) {
             return;
@@ -149,7 +139,7 @@ final class VideoTrackRecorder {
 
         try {
             startCallbackThread();
-            configureBestEncoder(mimeTypeForCodec(videoCodec));
+            configureBestEncoder(MediaFormat.MIMETYPE_VIDEO_AVC);
             prepared = true;
         } catch (Exception error) {
             finishResources();
@@ -638,10 +628,5 @@ final class VideoTrackRecorder {
         return false;
     }
 
-    private static String mimeTypeForCodec(int requestedCodec) {
-        return RecordingOptions.normalizeVideoCodec(requestedCodec)
-                == RecordingOptions.VIDEO_CODEC_H265
-                ? MediaFormat.MIMETYPE_VIDEO_HEVC
-                : MediaFormat.MIMETYPE_VIDEO_AVC;
-    }
+
 }

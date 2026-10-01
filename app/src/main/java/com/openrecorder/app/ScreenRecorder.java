@@ -123,12 +123,6 @@ final class ScreenRecorder {
         }
     }
 
-    static boolean isVideoCodecSupported(int requestedCodec) {
-        int codec = RecordingOptions.normalizeVideoCodec(requestedCodec);
-        return codec == RecordingOptions.VIDEO_CODEC_H264
-                || codec == RecordingOptions.VIDEO_CODEC_H265;
-    }
-
     synchronized void prepare() throws IOException {
         if (prepared) {
             return;
@@ -465,7 +459,7 @@ final class ScreenRecorder {
                     }
                 });
         videoRecorder.prepare();
-        String codecName = videoCodec == RecordingOptions.VIDEO_CODEC_H265 ? "H.265" : "H.264";
+        String codecName = "H.264";
         Log.i(TAG, "PrimeCap " + codecName + " profile: maximum="
                 + Math.max(size.width, size.height)
                 + ", frameRate=" + size.targetFrameRate + " fps"

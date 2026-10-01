@@ -135,8 +135,8 @@ class MainActivity : ComponentActivity() {
                 selectedVideoFrameRate = recorderPreferences.loadVideoFrameRate(),
                 force16By9Letterboxing = recorderPreferences.loadForce16By9Letterboxing(),
                 selectedVideoBitrate = recorderPreferences.loadVideoBitrate(),
-                selectedVideoCodec = recorderPreferences.loadVideoCodec(),
                 selectedCountdownSeconds = recorderPreferences.loadCountdownSeconds(),
+                recordingTimeoutMinutes = recorderPreferences.loadRecordingTimeoutMinutes(),
                 selectedOrientation = recorderPreferences.loadOrientation(),
                 selectedNamingPattern = recorderPreferences.loadNamingPattern(),
             ),
@@ -200,10 +200,10 @@ class MainActivity : ComponentActivity() {
                             selectedVideoBitrateIndex = VIDEO_BITRATES
                                 .indexOf(settingsState.selectedVideoBitrate)
                                 .coerceAtLeast(0),
-                            selectedVideoCodecIndex = settingsState.selectedVideoCodec,
                             selectedCountdownIndex = COUNTDOWN_OPTIONS
                                 .indexOf(settingsState.selectedCountdownSeconds)
                                 .coerceAtLeast(0),
+                            recordingTimeoutMinutes = settingsState.recordingTimeoutMinutes,
                             selectedNamingPatternIndex = NAMING_PATTERNS
                                 .indexOf(settingsState.selectedNamingPattern)
                                 .coerceAtLeast(0),
@@ -285,19 +285,6 @@ class MainActivity : ComponentActivity() {
                                     recorderPreferences.saveVideoBitrate(videoBitrate)
                                 }
                             },
-                            onVideoCodecSelected = { index ->
-                                if (optionsEnabled) {
-                                    val videoCodec = RecordingOptions.normalizeVideoCodec(index)
-                                    if (ScreenRecorder.isVideoCodecSupported(videoCodec)) {
-                                        updateRecordingSettingsUiState {
-                                            it.copy(selectedVideoCodec = videoCodec)
-                                        }
-                                        recorderPreferences.saveVideoCodec(videoCodec)
-                                    } else {
-                                        showUnsupportedVideoCodec(videoCodec)
-                                    }
-                                }
-                            },
                             onCountdownSelected = { index ->
                                 if (optionsEnabled) {
                                     val countdownSeconds = COUNTDOWN_OPTIONS.getOrElse(index) {
@@ -307,6 +294,14 @@ class MainActivity : ComponentActivity() {
                                         it.copy(selectedCountdownSeconds = countdownSeconds)
                                     }
                                     recorderPreferences.saveCountdownSeconds(countdownSeconds)
+                                }
+                            },
+                            onRecordingTimeoutChanged = { timeoutMinutes ->
+                                if (optionsEnabled) {
+                                    updateRecordingSettingsUiState {
+                                        it.copy(recordingTimeoutMinutes = timeoutMinutes)
+                                    }
+                                    recorderPreferences.saveRecordingTimeoutMinutes(timeoutMinutes)
                                 }
                             },
                             onNamingPatternSelected = { index ->
@@ -592,11 +587,6 @@ class MainActivity : ComponentActivity() {
 
     private fun ensureAudioPermissionAndRequestCapture() {
         val state = recordingSettingsUiState.value
-        if (!ScreenRecorder.isVideoCodecSupported(state.selectedVideoCodec)) {
-            showUnsupportedVideoCodec(state.selectedVideoCodec)
-            return
-        }
-
         val audioSource = state.selectedAudioSource
         if ((audioSource.usesInternalAudio() || audioSource.usesMicrophone()) &&
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
@@ -606,20 +596,6 @@ class MainActivity : ComponentActivity() {
         }
 
         ensureNotificationPermissionAndRequestCapture()
-    }
-
-    private fun showUnsupportedVideoCodec(videoCodec: Int) {
-        val codecName = getString(
-            if (videoCodec == RecordingOptions.VIDEO_CODEC_H265) {
-                R.string.video_codec_h265
-            } else {
-                R.string.video_codec_h264
-            },
-        )
-        showToast(
-            getString(R.string.video_codec_not_supported, codecName),
-            Toast.LENGTH_LONG,
-        )
     }
 
     private fun ensureNotificationPermissionAndRequestCapture() {
@@ -666,9 +642,10 @@ class MainActivity : ComponentActivity() {
             state.selectedVideoFrameRate,
             state.force16By9Letterboxing,
             state.selectedVideoBitrate,
-            state.selectedVideoCodec,
+            RecordingOptions.VIDEO_CODEC_H264,
             state.selectedNamingPattern,
             state.selectedOrientation,
+            state.recordingTimeoutMinutes,
             recordingStartTime,
         )
 
@@ -815,8 +792,8 @@ private data class RecordingSettingsUiState(
     val selectedVideoFrameRate: Int,
     val force16By9Letterboxing: Boolean,
     val selectedVideoBitrate: Int,
-    val selectedVideoCodec: Int,
     val selectedCountdownSeconds: Int,
+    val recordingTimeoutMinutes: Int,
     val selectedOrientation: Int,
     val selectedNamingPattern: String,
 )
