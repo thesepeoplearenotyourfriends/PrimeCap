@@ -17,6 +17,7 @@ android {
         externalNativeBuild {
             cmake {
                 arguments '-DANDROID_STL=none'
+                abiFilters 'arm64-v8a'
             }
         }
     }
@@ -87,6 +88,15 @@ tasks.register('buildPrimeCapVideoDaemon', Exec) {
 
 tasks.named('preBuild').configure {
     dependsOn tasks.named('buildPrimeCapVideoDaemon')
+}
+
+// The launcher executable must exist before AGP snapshots the generated asset directory.
+tasks.configureEach { task ->
+    if (task.name ==~ /merge(Debug|Release|Performance|Development)Assets/) {
+        def variant = task.name.substring('merge'.length(),
+                task.name.length() - 'Assets'.length())
+        task.dependsOn("externalNativeBuild${variant}")
+    }
 }
 
 dependencies {

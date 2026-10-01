@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(primecap_launcher C)
 
-add_library(primecap-launcher SHARED primecap_launcher.c)
-target_link_libraries(primecap-launcher log dl)
+add_executable(primecap-launcher primecap_launcher.c)
+target_link_libraries(primecap-launcher dl)
+
+add_custom_command(TARGET primecap-launcher POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../../scrcpy/build/assets
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:primecap-launcher>
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../../scrcpy/build/assets/primecap-launcher)
