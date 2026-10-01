@@ -22,7 +22,6 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Receives shell-daemon video output and writes it directly to RecordingMuxer. */
 final class PrimeCapVideoRecorder {
     interface Listener {
-        void onWarmupStarted();
         void onFinalCountdownStarted(int durationSeconds);
         void onLimitReached();
         void onFailure(Exception error);
@@ -37,9 +36,10 @@ final class PrimeCapVideoRecorder {
     private static final String LAUNCHER_ASSET = "primecap-launcher";
     private static final String LAUNCHER_PATH = "/data/local/tmp/primecap-launcher";
     private static final int MAGIC = 0x50434150;
-    private static final int PROTOCOL_VERSION = 4;
+    private static final int PROTOCOL_VERSION = 5;
     private static final int COMMAND_START = 1;
     private static final int COMMAND_STOP = 2;
+    private static final int COMMAND_REQUEST_SYNC_FRAME = 3;
     private static final int TYPE_FORMAT = 1;
     private static final int TYPE_SAMPLE = 2;
     private static final int TYPE_END = 3;
@@ -54,6 +54,8 @@ final class PrimeCapVideoRecorder {
             MINIMUM_WARMUP_SECONDS);
     private static final long FINAL_COUNTDOWN_NANOS = TimeUnit.SECONDS.toNanos(
             FINAL_COUNTDOWN_SECONDS);
+    private static final long QUIET_PERIOD_NANOS = TimeUnit.SECONDS.toNanos(1L);
+    private static final long SYNC_FRAME_LEAD_NANOS = TimeUnit.MILLISECONDS.toNanos(100L);
     private static final long KEYFRAME_TIMEOUT_MS = 30_000L;
     private static final long SOURCE_CLOCK_TOLERANCE_NANOS = 30_000_000_000L;
     private static final int RELAY_LOG_LIMIT = 16 * 1024;
@@ -96,12 +98,13 @@ final class PrimeCapVideoRecorder {
     private long lastWrittenPresentationTimeUs = -1L;
     private long encodedBytesWritten;
     private long warmupStartedNanos;
-    private long usableKeyframeNanos;
-    private long recordingEligibleNanos;
+    private volatile long usableKeyframeNanos;
+    private volatile long recordingEligibleNanos;
     private long recordingBoundaryNanos;
     private long discardedSamples;
     private long discardedBytes;
     private boolean firstAcceptedSample = true;
+    private boolean syncFrameRequested;
 
     PrimeCapVideoRecorder(Context context, int width, int height, int bitRate, int videoCodec,
             int frameRate, int recordingOrientation, long maximumFileSize, Listener listener) {
@@ -219,6 +222,12 @@ final class PrimeCapVideoRecorder {
         released = true;
         timelineReady.countDown();
         requestStop();
+    }
+
+    synchronized void onPreparationOverlayCleared() {
+        if (!released && usableKeyframeNanos != 0L && recordingEligibleNanos == 0L) {
+            recordingEligibleNanos = System.nanoTime() + QUIET_PERIOD_NANOS;
+        }
     }
 
     synchronized void requestStop() {
@@ -369,7 +378,6 @@ final class PrimeCapVideoRecorder {
         outputTrack.setFormat(format);
         formatReceived = true;
         warmupStartedNanos = System.nanoTime();
-        listener.onWarmupStarted();
         Log.i(TAG, "Daemon " + codecName() + " format: " + width + "x" + height);
         formatReady.countDown();
     }
@@ -393,10 +401,15 @@ final class PrimeCapVideoRecorder {
                     && warmupElapsedNanos >= MINIMUM_WARMUP_NANOS
                     && keyFrame) {
                 usableKeyframeNanos = nowNanos;
-                recordingEligibleNanos = nowNanos + FINAL_COUNTDOWN_NANOS;
                 listener.onFinalCountdownStarted(FINAL_COUNTDOWN_SECONDS);
             }
-            if (usableKeyframeNanos == 0L || nowNanos < recordingEligibleNanos || !keyFrame) {
+            if (recordingEligibleNanos != 0L && !syncFrameRequested
+                    && nowNanos >= recordingEligibleNanos - SYNC_FRAME_LEAD_NANOS) {
+                requestSyncFrame();
+            }
+            if (recordingEligibleNanos == 0L
+                    || nowNanos < recordingEligibleNanos
+                    || !keyFrame) {
                 discardedSamples++;
                 discardedBytes += sampleLength;
                 return;
@@ -456,6 +469,17 @@ final class PrimeCapVideoRecorder {
 
     private String codecName() {
         return videoCodec == RecordingOptions.VIDEO_CODEC_H265 ? "H.265" : "H.264";
+    }
+
+    private synchronized void requestSyncFrame() throws IOException {
+        syncFrameRequested = true;
+        DataOutputStream control = daemonControl;
+        if (control == null) {
+            throw new IOException("PrimeCap daemon control channel is unavailable");
+        }
+        control.writeByte(COMMAND_REQUEST_SYNC_FRAME);
+        control.flush();
+        Log.i(TAG, "Requested " + codecName() + " sync frame at final recording boundary");
     }
 
     private long adjustPresentationTime(long sourcePresentationTimeUs) {

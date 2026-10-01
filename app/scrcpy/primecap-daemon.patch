@@ -34,6 +34,8 @@
  import com.genymobile.scrcpy.util.Codec;
  import com.genymobile.scrcpy.util.CodecOption;
  import com.genymobile.scrcpy.util.CodecUtils;
+@@ -18,0 +19 @@
++import android.os.Bundle;
 @@ -37,7 +37,7 @@
      private static final int MAX_CONSECUTIVE_ERRORS = 3;
  
@@ -43,6 +45,8 @@
      private final String encoderName;
      private final List<CodecOption> codecOptions;
      private final int videoBitRate;
+@@ -49,0 +50 @@
++    private volatile MediaCodec runningCodec;
 @@ -52,7 +52,7 @@
  
      private final CaptureReset reset = new CaptureReset();
@@ -52,6 +56,10 @@
          this.capture = capture;
          this.streamer = streamer;
          this.videoBitRate = options.getVideoBitRate();
+@@ -99,0 +100 @@
++                    runningCodec = mediaCodec;
+@@ -126,0 +128 @@
++                    runningCodec = null;
 @@ -194,12 +194,15 @@
          return 0;
      }
@@ -69,3 +77,19 @@
              try {
                  eos = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                  // On EOS, there might be data or not, depending on bufferInfo.size
+@@ -310,0 +314,15 @@
++    public boolean requestSyncFrame() {
++        MediaCodec mediaCodec = runningCodec;
++        if (mediaCodec == null) {
++            return false;
++        }
++        try {
++            Bundle parameters = new Bundle();
++            parameters.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
++            mediaCodec.setParameters(parameters);
++            return true;
++        } catch (IllegalStateException | IllegalArgumentException e) {
++            return false;
++        }
++    }
++

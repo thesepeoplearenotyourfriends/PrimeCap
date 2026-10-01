@@ -211,6 +211,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
         try {
             startForegroundCompat(createRecordingNotification(true));
             setRecordingState(RecordingState.PREPARING);
+            startPreparationIndicator();
 
             int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
             Intent resultData;
@@ -643,6 +644,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
         if (finished.get() || !stopping.compareAndSet(false, true)) {
             return;
         }
+        runOnMainThread(this::cancelPreparationCountdown);
 
         Runnable scheduledStart = pendingStart;
         if (scheduledStart != null) {
@@ -708,6 +710,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
 
     private void failRecording(Exception error, ScreenRecorder failedRecorder) {
         Log.e(TAG, "Unable to start recording", error);
+        runOnMainThread(this::cancelPreparationCountdown);
         if (failedRecorder != null) {
             if (recorder == failedRecorder) {
                 recorder = null;
@@ -782,11 +785,6 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     }
 
     @Override
-    public void onPreparationWarmupStarted() {
-        runOnMainThread(this::startPreparationIndicator);
-    }
-
-    @Override
     public void onPreparationFinalCountdownStarted(int durationSeconds) {
         runOnMainThread(() -> startPreparationCountdown(durationSeconds));
     }
@@ -823,9 +821,16 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
         preparationCountdownTick = new Runnable() {
             @Override
             public void run() {
-                if (preparationCountdownTick != this || seconds[0] <= 1
-                        || stopping.get() || finished.get()) {
+                if (preparationCountdownTick != this || stopping.get() || finished.get()) {
                     cancelPreparationCountdown();
+                    return;
+                }
+                if (seconds[0] <= 1) {
+                    cancelPreparationCountdown();
+                    ScreenRecorder preparingRecorder = recorder;
+                    if (preparingRecorder != null) {
+                        preparingRecorder.onPreparationOverlayCleared();
+                    }
                     return;
                 }
                 preparationCountdownToast.setText(

@@ -31,7 +31,6 @@ final class ScreenRecorder {
         void onRecorderLimitReached();
         void onRecorderError(Exception error);
         void onAudioCaptureFailed();
-        void onPreparationWarmupStarted();
         void onPreparationFinalCountdownStarted(int durationSeconds);
     }
 
@@ -281,6 +280,13 @@ final class ScreenRecorder {
         }
     }
 
+    void onPreparationOverlayCleared() {
+        PrimeCapVideoRecorder activeVideoRecorder = videoRecorder;
+        if (timeline == null && activeVideoRecorder != null) {
+            activeVideoRecorder.onPreparationOverlayCleared();
+        }
+    }
+
     Uri save() throws IOException {
         if (!outputFinalized
                 || outputUri == null
@@ -443,11 +449,6 @@ final class ScreenRecorder {
                 recordingOrientation,
                 getMaximumVideoFileSize(),
                 new PrimeCapVideoRecorder.Listener() {
-                    @Override
-                    public void onWarmupStarted() {
-                        listener.onPreparationWarmupStarted();
-                    }
-
                     @Override
                     public void onFinalCountdownStarted(int durationSeconds) {
                         listener.onPreparationFinalCountdownStarted(durationSeconds);

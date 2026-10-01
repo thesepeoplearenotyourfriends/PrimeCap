@@ -26,10 +26,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Single-session shell-context display capture daemon over one local socket. */
 final class PrimeCapServer {
     private static final int MAGIC = 0x50434150; // PCAP
-    private static final int VERSION = 4;
+    private static final int VERSION = 5;
     private static final String SOCKET_NAME = "primecap_video_daemon";
     private static final int COMMAND_START = 1;
     private static final int COMMAND_STOP = 2;
+    private static final int COMMAND_REQUEST_SYNC_FRAME = 3;
     private static final int TYPE_FORMAT = 1;
     private static final int TYPE_SAMPLE = 2;
     private static final int TYPE_END = 3;
@@ -107,9 +108,25 @@ final class PrimeCapServer {
             });
             Thread stopReader = new Thread(() -> {
                 try {
-                    int command = input.readUnsignedByte();
-                    if (command != COMMAND_STOP) {
+                    while (true) {
+                        int command = input.readUnsignedByte();
+                        if (command == COMMAND_STOP) {
+                            stopRequested.set(true);
+                            encoder.stop();
+                            return;
+                        }
+                        if (command == COMMAND_REQUEST_SYNC_FRAME) {
+                            if (!encoder.requestSyncFrame()) {
+                                sink.writeError("Unable to request a "
+                                        + videoCodec.getName() + " sync frame");
+                                encoder.stop();
+                                return;
+                            }
+                            continue;
+                        }
                         sink.writeError("Unknown daemon command: " + command);
+                        encoder.stop();
+                        return;
                     }
                 } catch (IOException ignored) {
                     // Closing the session socket is also a STOP request.
