@@ -175,7 +175,7 @@
     <string name="capture_permission_unavailable">Screen capture is unavailable on this device.</string>
     <string name="audio_permission_denied">The selected audio option requires microphone permission.</string>
     <string name="audio_capture_failed">Audio capture failed. The video will be saved without audio.</string>
-    <string name="video_daemon_unavailable">Video daemon unavailable. Start it from adb shell, then try again.</string>
+    <string name="video_daemon_unavailable">Video daemon unavailable. Check root access, then try again.</string>
     <string name="recording_failed">Could not start recording.</string>
     <string name="pause_recording_failed">Could not pause the recording.</string>
     <string name="resume_recording_failed">Could not resume the recording.</string>

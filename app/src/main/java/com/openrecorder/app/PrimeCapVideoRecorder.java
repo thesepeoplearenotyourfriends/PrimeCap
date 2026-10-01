@@ -29,6 +29,9 @@ final class PrimeCapVideoRecorder {
     private static final String TAG = "PrimeCapVideo";
     private static final String RELAY_ASSET = "primecap-relay";
     private static final String RELAY_PATH = "/data/local/tmp/primecap-relay";
+    private static final String DAEMON_ASSET = "primecap-video-daemon";
+    private static final String DAEMON_PATH = "/data/local/tmp/primecap-video-daemon";
+    private static final String DAEMON_PID_PATH = "/data/local/tmp/primecap-video-daemon.pid";
     private static final int MAGIC = 0x50434150;
     private static final int PROTOCOL_VERSION = 3;
     private static final int COMMAND_START = 1;
@@ -59,8 +62,12 @@ final class PrimeCapVideoRecorder {
     private RecordingMuxer.Track outputTrack;
     private RecordingTimeline timeline;
     private Process relayProcess;
+    private Process daemonProcess;
     private Thread receiverThread;
     private File relayFile;
+    private File daemonFile;
+    private boolean daemonOwned;
+    private int launchedDaemonPid = -1;
     private final StringBuilder recentRelayErrors = new StringBuilder();
     private volatile DataOutputStream daemonControl;
     private volatile boolean stopRequested;
@@ -87,7 +94,9 @@ final class PrimeCapVideoRecorder {
 
     synchronized void prepare() throws IOException {
         if (relayFile == null) {
-            relayFile = deployRelay();
+            relayFile = deployAsset(RELAY_ASSET, RELAY_PATH);
+            daemonFile = deployAsset(DAEMON_ASSET, DAEMON_PATH);
+            launchDaemon();
         }
     }
 
@@ -116,12 +125,14 @@ final class PrimeCapVideoRecorder {
         }
         if (!ready) {
             terminateRelay();
+            terminateOwnedDaemon();
             throw new VideoDaemonUnavailableException(
                     "Video daemon unavailable: timed out waiting for video format");
         }
         Exception startupFailure = failure.get();
         if (startupFailure != null) {
             terminateRelay();
+            terminateOwnedDaemon();
             if (startupFailure instanceof VideoDaemonUnavailableException) {
                 throw (VideoDaemonUnavailableException) startupFailure;
             }
@@ -187,6 +198,9 @@ final class PrimeCapVideoRecorder {
         timelineReady.countDown();
         requestStop();
         terminateRelay();
+        if (!started || receiverFinished.getCount() == 0) {
+            terminateOwnedDaemon();
+        }
     }
 
     private void receive() {
@@ -210,6 +224,7 @@ final class PrimeCapVideoRecorder {
             }
             daemonPid = input.readInt();
             daemonUid = input.readInt();
+            daemonOwned = daemonPid == launchedDaemonPid;
             Log.i(TAG, "Connected to video daemon pid=" + daemonPid + " uid=" + daemonUid);
             if (stopRequested) {
                 daemonControl.writeByte(COMMAND_STOP);
@@ -247,6 +262,7 @@ final class PrimeCapVideoRecorder {
             formatReady.countDown();
             outputTrack.finish();
             terminateRelay();
+            terminateOwnedDaemon();
             receiverFinished.countDown();
         }
     }
@@ -356,9 +372,9 @@ final class PrimeCapVideoRecorder {
         drainRelayErrors(relayProcess.getErrorStream());
     }
 
-    private File deployRelay() throws IOException {
-        File source = new File(context.getCodeCacheDir(), RELAY_ASSET + ".stage");
-        try (InputStream input = context.getAssets().open(RELAY_ASSET);
+    private File deployAsset(String assetName, String destinationPath) throws IOException {
+        File source = new File(context.getCodeCacheDir(), assetName + ".stage");
+        try (InputStream input = context.getAssets().open(assetName);
                 FileOutputStream output = new FileOutputStream(source)) {
             byte[] buffer = new byte[32 * 1024];
             int count;
@@ -367,15 +383,15 @@ final class PrimeCapVideoRecorder {
             }
             output.getFD().sync();
         }
-        String temporaryPath = RELAY_PATH + ".new";
+        String temporaryPath = destinationPath + ".new";
         String install = "cp " + shellQuote(source.getAbsolutePath()) + " "
                 + shellQuote(temporaryPath) + " && chmod 0644 " + shellQuote(temporaryPath)
-                + " && mv " + shellQuote(temporaryPath) + " " + shellQuote(RELAY_PATH);
+                + " && mv " + shellQuote(temporaryPath) + " " + shellQuote(destinationPath);
         Process process = new ProcessBuilder("su", "-c", install).start();
         String errors = readText(process.getErrorStream());
         try {
             if (process.waitFor() != 0) {
-                throw new IOException("Unable to stage PrimeCap relay: " + errors.trim());
+                throw new IOException("Unable to stage " + assetName + ": " + errors.trim());
             }
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
@@ -383,10 +399,85 @@ final class PrimeCapVideoRecorder {
             throw new IOException("Interrupted while staging PrimeCap relay", error);
         } finally {
             if (!source.delete()) {
-                Log.w(TAG, "Unable to remove temporary relay asset");
+                Log.w(TAG, "Unable to remove temporary PrimeCap asset");
             }
         }
-        return new File(RELAY_PATH);
+        return new File(destinationPath);
+    }
+
+    private void launchDaemon() throws IOException {
+        String nativeLauncher = new File(context.getApplicationInfo().nativeLibraryDir,
+                "libprimecap-launcher.so").getAbsolutePath();
+        String command = "rm -f " + shellQuote(DAEMON_PID_PATH) + " && CLASSPATH="
+                + shellQuote(daemonFile.getAbsolutePath())
+                + " app_process / com.genymobile.scrcpy.PrimeCapLauncher "
+                + shellQuote(nativeLauncher) + " " + shellQuote(daemonFile.getAbsolutePath())
+                + " " + shellQuote(DAEMON_PID_PATH);
+        daemonProcess = new ProcessBuilder("su", "-c", command).start();
+        drainDaemonErrors(daemonProcess.getErrorStream());
+        try {
+            Thread.sleep(350L);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            daemonProcess.destroyForcibly();
+            throw new IOException("Interrupted while starting PrimeCap daemon", error);
+        }
+        Process pidReader = new ProcessBuilder("su", "-c", "cat " + DAEMON_PID_PATH).start();
+        String pidText = readText(pidReader.getInputStream()).trim();
+        try {
+            if (pidReader.waitFor() == 0) {
+                launchedDaemonPid = Integer.parseInt(pidText);
+            }
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while reading PrimeCap daemon PID", error);
+        } catch (NumberFormatException error) {
+            Log.w(TAG, "Launcher did not publish a valid daemon PID: " + pidText);
+        }
+    }
+
+    private void drainDaemonErrors(InputStream stream) {
+        Thread logger = new Thread(() -> {
+            try {
+                byte[] buffer = new byte[1024];
+                int count;
+                while ((count = stream.read(buffer)) != -1) {
+                    Log.w(TAG, "Daemon stderr: " + new String(buffer, 0, count).trim());
+                }
+            } catch (IOException ignored) {
+            }
+        }, "PrimeCapDaemonDiagnostics");
+        logger.setDaemon(true);
+        logger.start();
+    }
+
+    private synchronized void terminateOwnedDaemon() {
+        Process process = daemonProcess;
+        daemonProcess = null;
+        if (process == null) {
+            return;
+        }
+        int pidToStop = daemonOwned ? daemonPid : launchedDaemonPid;
+        if (pidToStop > 0) {
+            try {
+                Process killer = new ProcessBuilder("su", "-c", "kill " + pidToStop).start();
+                if (!killer.waitFor(2, TimeUnit.SECONDS)) {
+                    killer.destroyForcibly();
+                }
+            } catch (IOException error) {
+                Log.w(TAG, "Unable to stop owned PrimeCap daemon pid=" + pidToStop, error);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        try {
+            if (!process.waitFor(1, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+            }
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+        }
     }
 
     private void drainRelayErrors(InputStream stream) {
