@@ -32,6 +32,8 @@ final class PrimeCapVideoRecorder {
     private static final String DAEMON_ASSET = "primecap-video-daemon";
     private static final String DAEMON_PATH = "/data/local/tmp/primecap-video-daemon";
     private static final String DAEMON_PID_PATH = "/data/local/tmp/primecap-video-daemon.pid";
+    private static final String LAUNCHER_ASSET = "primecap-launcher";
+    private static final String LAUNCHER_PATH = "/data/local/tmp/primecap-launcher";
     private static final int MAGIC = 0x50434150;
     private static final int PROTOCOL_VERSION = 3;
     private static final int COMMAND_START = 1;
@@ -97,6 +99,7 @@ final class PrimeCapVideoRecorder {
         if (relayFile == null) {
             relayFile = deployAsset(RELAY_ASSET, RELAY_PATH);
             daemonFile = deployAsset(DAEMON_ASSET, DAEMON_PATH);
+            deployAsset(LAUNCHER_ASSET, LAUNCHER_PATH, "0755");
             launchDaemon();
         }
     }
@@ -374,6 +377,11 @@ final class PrimeCapVideoRecorder {
     }
 
     private File deployAsset(String assetName, String destinationPath) throws IOException {
+        return deployAsset(assetName, destinationPath, "0644");
+    }
+
+    private File deployAsset(String assetName, String destinationPath, String mode)
+            throws IOException {
         File source = new File(context.getCodeCacheDir(), assetName + ".stage");
         try (InputStream input = context.getAssets().open(assetName);
                 FileOutputStream output = new FileOutputStream(source)) {
@@ -386,7 +394,8 @@ final class PrimeCapVideoRecorder {
         }
         String temporaryPath = destinationPath + ".new";
         String install = "cp " + shellQuote(source.getAbsolutePath()) + " "
-                + shellQuote(temporaryPath) + " && chmod 0644 " + shellQuote(temporaryPath)
+                + shellQuote(temporaryPath) + " && chmod " + mode + " "
+                + shellQuote(temporaryPath)
                 + " && mv " + shellQuote(temporaryPath) + " " + shellQuote(destinationPath);
         Process process = new ProcessBuilder("su", "-c", install).start();
         String errors = readText(process.getErrorStream());
@@ -407,12 +416,8 @@ final class PrimeCapVideoRecorder {
     }
 
     private void launchDaemon() throws IOException {
-        String nativeLauncher = new File(context.getApplicationInfo().nativeLibraryDir,
-                "libprimecap-launcher.so").getAbsolutePath();
-        String command = "rm -f " + shellQuote(DAEMON_PID_PATH) + " && CLASSPATH="
-                + shellQuote(daemonFile.getAbsolutePath())
-                + " app_process / com.genymobile.scrcpy.PrimeCapLauncher "
-                + shellQuote(nativeLauncher) + " " + shellQuote(daemonFile.getAbsolutePath())
+        String command = "rm -f " + shellQuote(DAEMON_PID_PATH) + " && "
+                + shellQuote(LAUNCHER_PATH) + " " + shellQuote(daemonFile.getAbsolutePath())
                 + " " + shellQuote(DAEMON_PID_PATH);
         daemonProcess = new ProcessBuilder("su", "-c", command).start();
         drainDaemonErrors(daemonProcess.getErrorStream());
