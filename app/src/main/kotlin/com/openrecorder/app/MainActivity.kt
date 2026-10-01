@@ -128,7 +128,6 @@ class MainActivity : ComponentActivity() {
         recordScreenUiState = mutableStateOf(
             RecordScreenUiState(
                 recordingState = RecordingState.get(),
-                deviceRotationState = DeviceRotationController.read(),
             ),
         )
         recordingSettingsUiState = mutableStateOf(
@@ -343,9 +342,9 @@ class MainActivity : ComponentActivity() {
         updateRecordScreenUiState {
             it.copy(
                 recordingState = RecordingState.get(),
-                deviceRotationState = DeviceRotationController.read(),
             )
         }
+        refreshDeviceRotation()
         if (recordingsLoaded && recordingsStale && !recordingsUiState.value.deleting) {
             loadRecordings(force = true)
         }
@@ -560,12 +559,11 @@ class MainActivity : ComponentActivity() {
     private fun setDeviceRotation(state: DeviceRotationState) {
         if (recordScreenUiState.value.rotationChangeInProgress) return
         updateRecordScreenUiState { it.copy(rotationChangeInProgress = true) }
-        val executor = rotationExecutor ?: Executors.newSingleThreadExecutor().also {
-            rotationExecutor = it
-        }
+        val executor = getRotationExecutor()
         executor.execute {
-            val changed = DeviceRotationController.apply(state)
+            val applied = DeviceRotationController.apply(state)
             val actualState = DeviceRotationController.read()
+            val changed = applied && actualState == state
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 updateRecordScreenUiState {
@@ -576,6 +574,22 @@ class MainActivity : ComponentActivity() {
                 }
                 if (!changed) showToast(R.string.rotation_change_failed, Toast.LENGTH_LONG)
             }
+        }
+    }
+
+    private fun refreshDeviceRotation() {
+        getRotationExecutor().execute {
+            val actualState = DeviceRotationController.read()
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                updateRecordScreenUiState { it.copy(deviceRotationState = actualState) }
+            }
+        }
+    }
+
+    private fun getRotationExecutor(): ExecutorService {
+        return rotationExecutor ?: Executors.newSingleThreadExecutor().also {
+            rotationExecutor = it
         }
     }
 
