@@ -51,12 +51,9 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     private static final String EXTRA_SAMPLE_RATE = "sample_rate";
     private static final String EXTRA_VIDEO_RESOLUTION = "video_resolution";
     private static final String EXTRA_VIDEO_FRAME_RATE = "video_frame_rate";
-    private static final String EXTRA_FORCE_16_BY_9_LETTERBOXING =
-            "force_16_by_9_letterboxing";
     private static final String EXTRA_VIDEO_BITRATE = "video_bitrate";
     private static final String EXTRA_VIDEO_CODEC = "video_codec";
     private static final String EXTRA_NAMING_PATTERN = "naming_pattern";
-    private static final String EXTRA_ORIENTATION = "recording_orientation";
     private static final String EXTRA_RECORDING_TIMEOUT_MINUTES = "recording_timeout_minutes";
     private static final String EXTRA_START_AT_ELAPSED_REALTIME =
             "start_at_elapsed_realtime";
@@ -89,11 +86,9 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             int sampleRate,
             int videoResolution,
             int videoFrameRate,
-            boolean force16By9Letterboxing,
             int videoBitrate,
             int videoCodec,
             String namingPattern,
-            int recordingOrientation,
             int recordingTimeoutMinutes,
             long startAtElapsedRealtime) {
         return new Intent(context, RecordingService.class)
@@ -108,7 +103,6 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                 .putExtra(
                         EXTRA_VIDEO_FRAME_RATE,
                         RecordingOptions.normalizeVideoFrameRate(videoFrameRate))
-                .putExtra(EXTRA_FORCE_16_BY_9_LETTERBOXING, force16By9Letterboxing)
                 .putExtra(
                         EXTRA_VIDEO_BITRATE,
                         RecordingOptions.normalizeVideoBitrate(videoBitrate))
@@ -116,9 +110,6 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                 .putExtra(
                         EXTRA_NAMING_PATTERN,
                         RecordingOptions.normalizeNamingPattern(namingPattern))
-                .putExtra(
-                        EXTRA_ORIENTATION,
-                        RecordingOptions.normalizeOrientation(recordingOrientation))
                 .putExtra(
                         EXTRA_RECORDING_TIMEOUT_MINUTES,
                         RecordingOptions.normalizeRecordingTimeoutMinutes(recordingTimeoutMinutes))
@@ -240,9 +231,6 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             int videoFrameRate = RecordingOptions.normalizeVideoFrameRate(intent.getIntExtra(
                     EXTRA_VIDEO_FRAME_RATE,
                     RecordingOptions.DEFAULT_VIDEO_FRAME_RATE));
-            boolean force16By9Letterboxing = intent.getBooleanExtra(
-                    EXTRA_FORCE_16_BY_9_LETTERBOXING,
-                    false);
             int videoBitrate = RecordingOptions.normalizeVideoBitrate(intent.getIntExtra(
                     EXTRA_VIDEO_BITRATE,
                     RecordingOptions.DEFAULT_VIDEO_BITRATE));
@@ -251,9 +239,6 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                     RecordingOptions.DEFAULT_VIDEO_CODEC));
             String namingPattern = RecordingOptions.normalizeNamingPattern(
                     intent.getStringExtra(EXTRA_NAMING_PATTERN));
-            int recordingOrientation = RecordingOptions.normalizeOrientation(intent.getIntExtra(
-                    EXTRA_ORIENTATION,
-                    RecordingOptions.DEFAULT_ORIENTATION));
             recordingTimeoutMinutes = RecordingOptions.normalizeRecordingTimeoutMinutes(
                     intent.getIntExtra(
                             EXTRA_RECORDING_TIMEOUT_MINUTES,
@@ -266,11 +251,9 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                     sampleRate,
                     videoResolution,
                     videoFrameRate,
-                    force16By9Letterboxing,
                     videoBitrate,
                     videoCodec,
                     namingPattern,
-                    recordingOrientation,
                     this);
             recorder = pendingRecorder;
 

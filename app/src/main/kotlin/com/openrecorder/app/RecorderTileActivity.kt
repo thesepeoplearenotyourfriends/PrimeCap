@@ -123,11 +123,9 @@ class RecorderTileActivity : ComponentActivity() {
             recorderPreferences.loadSampleRate(),
             recorderPreferences.loadVideoResolution(),
             recorderPreferences.loadVideoFrameRate(),
-            recorderPreferences.loadForce16By9Letterboxing(),
             recorderPreferences.loadVideoBitrate(),
             RecordingOptions.VIDEO_CODEC_H264,
             recorderPreferences.loadNamingPattern(),
-            recorderPreferences.loadOrientation(),
             recorderPreferences.loadRecordingTimeoutMinutes(),
             SystemClock.elapsedRealtime() + countdownMillis,
         )

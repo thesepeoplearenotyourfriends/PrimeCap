@@ -42,7 +42,7 @@ final class PrimeCapVideoRecorder {
     private static final String LAUNCHER_ASSET = "primecap-launcher";
     private static final String LAUNCHER_PATH = "/data/local/tmp/primecap-launcher";
     private static final int MAGIC = 0x50434150;
-    private static final int PROTOCOL_VERSION = 5;
+    private static final int PROTOCOL_VERSION = 6;
     private static final int COMMAND_START = 1;
     private static final int COMMAND_STOP = 2;
     private static final int COMMAND_REQUEST_SYNC_FRAME = 3;
@@ -77,7 +77,6 @@ final class PrimeCapVideoRecorder {
     private final int bitRate;
     private final int videoCodec;
     private final int frameRate;
-    private final int recordingOrientation;
     private final long maximumFileSize;
     private final Listener listener;
     private final AtomicReference<Exception> failure = new AtomicReference<>();
@@ -121,13 +120,12 @@ final class PrimeCapVideoRecorder {
     private boolean firstAcceptedSample = true;
 
     PrimeCapVideoRecorder(Context context, int width, int height, int bitRate, int videoCodec,
-            int frameRate, int recordingOrientation, long maximumFileSize, Listener listener) {
+            int frameRate, long maximumFileSize, Listener listener) {
         this.context = context.getApplicationContext();
         this.maxSize = Math.max(width, height);
         this.bitRate = bitRate;
         this.videoCodec = RecordingOptions.normalizeVideoCodec(videoCodec);
         this.frameRate = frameRate;
-        this.recordingOrientation = RecordingOptions.normalizeOrientation(recordingOrientation);
         this.maximumFileSize = maximumFileSize;
         this.listener = listener;
     }
@@ -323,7 +321,6 @@ final class PrimeCapVideoRecorder {
             daemonControl.writeInt(bitRate);
             daemonControl.writeInt(videoCodec);
             daemonControl.writeFloat((float) frameRate);
-            daemonControl.writeInt(recordingOrientation);
             daemonControl.flush();
             if (input.readInt() != MAGIC || input.readInt() != PROTOCOL_VERSION) {
                 throw new IOException("Unsupported PrimeCap video daemon protocol");

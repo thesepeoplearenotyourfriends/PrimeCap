@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -22,8 +23,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
@@ -52,6 +55,9 @@ internal fun RecorderScreen(
     recordingState: Int,
     countdownSeconds: Int?,
     actionEnabled: Boolean,
+    deviceRotationState: DeviceRotationState?,
+    rotationControlEnabled: Boolean,
+    onRotationSelected: (DeviceRotationState) -> Unit,
     onActionClick: () -> Unit,
 ) {
     val scrollBehavior = MiuixScrollBehavior()
@@ -84,6 +90,15 @@ internal fun RecorderScreen(
             }
 
             item {
+                SmallTitle(text = stringResource(R.string.device_rotation_label))
+                DeviceRotationControl(
+                    selectedState = deviceRotationState,
+                    enabled = rotationControlEnabled,
+                    onSelected = onRotationSelected,
+                )
+            }
+
+            item {
                 RecordActionCard(
                     label = actionLabel(
                         recordingState = recordingState,
@@ -94,6 +109,62 @@ internal fun RecorderScreen(
                     enabled = actionEnabled,
                     onClick = onActionClick,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeviceRotationControl(
+    selectedState: DeviceRotationState?,
+    enabled: Boolean,
+    onSelected: (DeviceRotationState) -> Unit,
+) {
+    val options = listOf(
+        DeviceRotationState.UNLOCKED to stringResource(R.string.rotation_unlocked),
+        DeviceRotationState.LOCKED_90 to stringResource(R.string.rotation_locked_90),
+        DeviceRotationState.LOCKED_270 to stringResource(R.string.rotation_locked_270),
+    )
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .padding(bottom = 12.dp),
+        insideMargin = PaddingValues(4.dp),
+    ) {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            options.forEach { (state, label) ->
+                val selected = state == selectedState
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (selected) MiuixTheme.colorScheme.primary
+                            else Color.Transparent,
+                        )
+                        .selectable(
+                            selected = selected,
+                            enabled = enabled && !selected,
+                            role = Role.RadioButton,
+                            onClick = { onSelected(state) },
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = label,
+                        style = MiuixTheme.textStyles.body2,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (selected) {
+                            MiuixTheme.colorScheme.onPrimary
+                        } else if (enabled) {
+                            MiuixTheme.colorScheme.onSurface
+                        } else {
+                            MiuixTheme.colorScheme.disabledOnSecondaryVariant
+                        },
+                    )
+                }
             }
         }
     }

@@ -49,8 +49,5 @@ public final class RecordingOptionsTest {
         assertEquals(
                 RecordingOptions.VIDEO_BITRATE_2_MBPS,
                 RecordingOptions.DEFAULT_VIDEO_BITRATE);
-        assertEquals(
-                RecordingOptions.ORIENTATION_LANDSCAPE,
-                RecordingOptions.DEFAULT_ORIENTATION);
     }
 }

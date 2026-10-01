@@ -39,6 +39,7 @@ class MainActivity : ComponentActivity() {
         RecordingRepository(applicationContext)
     }
     private var recordingsExecutor: ExecutorService? = null
+    private var rotationExecutor: ExecutorService? = null
     private var countDownTimer: CountDownTimer? = null
     private var stateListenerRegistered = false
     private var recordingsLoadGeneration = 0
@@ -125,7 +126,10 @@ class MainActivity : ComponentActivity() {
             ),
         )
         recordScreenUiState = mutableStateOf(
-            RecordScreenUiState(recordingState = RecordingState.get()),
+            RecordScreenUiState(
+                recordingState = RecordingState.get(),
+                deviceRotationState = DeviceRotationController.read(contentResolver),
+            ),
         )
         recordingSettingsUiState = mutableStateOf(
             RecordingSettingsUiState(
@@ -133,11 +137,9 @@ class MainActivity : ComponentActivity() {
                 selectedSampleRate = recorderPreferences.loadSampleRate(),
                 selectedVideoResolution = recorderPreferences.loadVideoResolution(),
                 selectedVideoFrameRate = recorderPreferences.loadVideoFrameRate(),
-                force16By9Letterboxing = recorderPreferences.loadForce16By9Letterboxing(),
                 selectedVideoBitrate = recorderPreferences.loadVideoBitrate(),
                 selectedCountdownSeconds = recorderPreferences.loadCountdownSeconds(),
                 recordingTimeoutMinutes = recorderPreferences.loadRecordingTimeoutMinutes(),
-                selectedOrientation = recorderPreferences.loadOrientation(),
                 selectedNamingPattern = recorderPreferences.loadNamingPattern(),
             ),
         )
@@ -173,6 +175,9 @@ class MainActivity : ComponentActivity() {
                             recordingState = recordState.recordingState,
                             countdownSeconds = recordState.countdownSeconds,
                             actionEnabled = recordState.recordingState != RecordingState.SAVING,
+                            deviceRotationState = recordState.deviceRotationState,
+                            rotationControlEnabled = !recordState.rotationChangeInProgress,
+                            onRotationSelected = ::setDeviceRotation,
                             onActionClick = ::onRecordButtonClicked,
                         )
                     },
@@ -196,7 +201,6 @@ class MainActivity : ComponentActivity() {
                             selectedVideoFrameRateIndex = VIDEO_FRAME_RATES
                                 .indexOf(settingsState.selectedVideoFrameRate)
                                 .coerceAtLeast(0),
-                            force16By9Letterboxing = settingsState.force16By9Letterboxing,
                             selectedVideoBitrateIndex = VIDEO_BITRATES
                                 .indexOf(settingsState.selectedVideoBitrate)
                                 .coerceAtLeast(0),
@@ -207,7 +211,6 @@ class MainActivity : ComponentActivity() {
                             selectedNamingPatternIndex = NAMING_PATTERNS
                                 .indexOf(settingsState.selectedNamingPattern)
                                 .coerceAtLeast(0),
-                            selectedOrientationIndex = settingsState.selectedOrientation,
                             optionsEnabled = optionsEnabled,
                             onThemeSelected = { index ->
                                 val themeMode = ThemeMode.normalize(index)
@@ -264,16 +267,6 @@ class MainActivity : ComponentActivity() {
                                     recorderPreferences.saveVideoFrameRate(videoFrameRate)
                                 }
                             },
-                            onForce16By9LetterboxingChanged = { forceLetterboxing ->
-                                if (optionsEnabled) {
-                                    updateRecordingSettingsUiState {
-                                        it.copy(force16By9Letterboxing = forceLetterboxing)
-                                    }
-                                    recorderPreferences.saveForce16By9Letterboxing(
-                                        forceLetterboxing,
-                                    )
-                                }
-                            },
                             onVideoBitrateSelected = { index ->
                                 if (optionsEnabled) {
                                     val videoBitrate = VIDEO_BITRATES.getOrElse(index) {
@@ -315,15 +308,6 @@ class MainActivity : ComponentActivity() {
                                     recorderPreferences.saveNamingPattern(namingPattern)
                                 }
                             },
-                            onOrientationSelected = { index ->
-                                if (optionsEnabled) {
-                                    val orientation = RecordingOptions.normalizeOrientation(index)
-                                    updateRecordingSettingsUiState {
-                                        it.copy(selectedOrientation = orientation)
-                                    }
-                                    recorderPreferences.saveOrientation(orientation)
-                                }
-                            },
                             onViewOnGitHub = ::viewOnGitHub,
                             onViewLicense = ::viewLicense,
                             onOpenExternalUrl = ::viewOpenSourceLicense,
@@ -356,7 +340,12 @@ class MainActivity : ComponentActivity() {
             RecordingState.addListener(stateListener)
             stateListenerRegistered = true
         }
-        updateRecordScreenUiState { it.copy(recordingState = RecordingState.get()) }
+        updateRecordScreenUiState {
+            it.copy(
+                recordingState = RecordingState.get(),
+                deviceRotationState = DeviceRotationController.read(contentResolver),
+            )
+        }
         if (recordingsLoaded && recordingsStale && !recordingsUiState.value.deleting) {
             loadRecordings(force = true)
         }
@@ -377,6 +366,8 @@ class MainActivity : ComponentActivity() {
         cancelCountdownUi()
         recordingsExecutor?.shutdownNow()
         recordingsExecutor = null
+        rotationExecutor?.shutdownNow()
+        rotationExecutor = null
         super.onDestroy()
     }
 
@@ -566,6 +557,28 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun setDeviceRotation(state: DeviceRotationState) {
+        if (recordScreenUiState.value.rotationChangeInProgress) return
+        updateRecordScreenUiState { it.copy(rotationChangeInProgress = true) }
+        val executor = rotationExecutor ?: Executors.newSingleThreadExecutor().also {
+            rotationExecutor = it
+        }
+        executor.execute {
+            val changed = DeviceRotationController.apply(state)
+            val actualState = DeviceRotationController.read(contentResolver)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                updateRecordScreenUiState {
+                    it.copy(
+                        deviceRotationState = actualState,
+                        rotationChangeInProgress = false,
+                    )
+                }
+                if (!changed) showToast(R.string.rotation_change_failed, Toast.LENGTH_LONG)
+            }
+        }
+    }
+
     private fun onRecordButtonClicked() {
         val state = recordScreenUiState.value
         when {
@@ -640,11 +653,9 @@ class MainActivity : ComponentActivity() {
             state.selectedSampleRate,
             state.selectedVideoResolution,
             state.selectedVideoFrameRate,
-            state.force16By9Letterboxing,
             state.selectedVideoBitrate,
             RecordingOptions.VIDEO_CODEC_H264,
             state.selectedNamingPattern,
-            state.selectedOrientation,
             state.recordingTimeoutMinutes,
             recordingStartTime,
         )
@@ -782,6 +793,8 @@ private data class AppUiState(
 private data class RecordScreenUiState(
     val recordingState: Int,
     val countdownSeconds: Int? = null,
+    val deviceRotationState: DeviceRotationState? = null,
+    val rotationChangeInProgress: Boolean = false,
 )
 
 @Immutable
@@ -790,11 +803,9 @@ private data class RecordingSettingsUiState(
     val selectedSampleRate: Int,
     val selectedVideoResolution: Int,
     val selectedVideoFrameRate: Int,
-    val force16By9Letterboxing: Boolean,
     val selectedVideoBitrate: Int,
     val selectedCountdownSeconds: Int,
     val recordingTimeoutMinutes: Int,
-    val selectedOrientation: Int,
     val selectedNamingPattern: String,
 )
 

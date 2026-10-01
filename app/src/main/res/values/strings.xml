@@ -102,8 +102,6 @@
     <string name="video_frame_rate_90">90 fps</string>
     <string name="video_frame_rate_60">60 fps</string>
     <string name="video_frame_rate_30">30 fps</string>
-    <string name="force_16_by_9_letterboxing">Force 16:9 with letterboxing</string>
-    <string name="force_16_by_9_letterboxing_summary">Fit the full capture inside a 16:9 frame without cropping.</string>
     <string name="video_bitrate_label">Video bitrate</string>
     <string name="video_bitrate_auto">Automatic</string>
     <string name="video_bitrate_0_75">0.75 Mbps</string>
@@ -135,10 +133,11 @@
     <string name="naming_pattern_month_day_year">mm-dd-yyyy_hh-mm-ss</string>
     <string name="naming_pattern_year_month_day">yyyy-mm-dd_hh-mm-ss</string>
     <string name="naming_pattern_year_day_month">yyyy-dd-mm_hh-mm-ss</string>
-    <string name="recording_orientation_label">Recording orientation</string>
-    <string name="orientation_automatic">Automatic</string>
-    <string name="orientation_portrait">Portrait</string>
-    <string name="orientation_landscape">Landscape</string>
+    <string name="device_rotation_label">Device rotation</string>
+    <string name="rotation_unlocked">Unlocked</string>
+    <string name="rotation_locked_90">Locked 90°</string>
+    <string name="rotation_locked_270">Locked 270°</string>
+    <string name="rotation_change_failed">Could not change device rotation.</string>
     <string name="recordings_title">Recordings</string>
     <string name="recordings_count">Recorded Videos: %1$d</string>
     <string name="recordings_loading">Loading recordings…</string>

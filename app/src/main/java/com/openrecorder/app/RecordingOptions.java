@@ -42,11 +42,6 @@ final class RecordingOptions {
     static final int RECORDING_TIMEOUT_OFF = 0;
     static final int DEFAULT_RECORDING_TIMEOUT_MINUTES = RECORDING_TIMEOUT_OFF;
 
-    static final int ORIENTATION_AUTOMATIC = 0;
-    static final int ORIENTATION_PORTRAIT = 1;
-    static final int ORIENTATION_LANDSCAPE = 2;
-    static final int DEFAULT_ORIENTATION = ORIENTATION_LANDSCAPE;
-
     static final String NAMING_DAY_MONTH_YEAR = "dd-MM-yyyy_HH-mm-ss";
     static final String NAMING_MONTH_DAY_YEAR = "MM-dd-yyyy_HH-mm-ss";
     static final String NAMING_YEAR_MONTH_DAY = "yyyy-MM-dd_HH-mm-ss";
@@ -110,12 +105,6 @@ final class RecordingOptions {
 
     static int normalizeRecordingTimeoutMinutes(int value) {
         return Math.max(RECORDING_TIMEOUT_OFF, value);
-    }
-
-    static int normalizeOrientation(int value) {
-        return value == ORIENTATION_PORTRAIT || value == ORIENTATION_LANDSCAPE
-                ? value
-                : ORIENTATION_AUTOMATIC;
     }
 
     static String normalizeNamingPattern(String value) {

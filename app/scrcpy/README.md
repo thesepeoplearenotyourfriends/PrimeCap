@@ -27,7 +27,7 @@ only over the child process's stdin/stdout, and then terminates it. The relay's
 stdout contains only bytes copied from the daemon socket; all relay diagnostics
 are written to stderr.
 
-For each session the APK sends `START` with max size, bitrate, fps, and
-orientation. The daemon responds with the existing framed `FORMAT`, `SAMPLE`,
+For each session the APK sends `START` with max size, bitrate, and fps. The
+daemon leaves scrcpy capture orientation unlocked and responds with the framed `FORMAT`, `SAMPLE`,
 `END`, and `ERROR` stream. Samples retain their original MediaCodec PTS and
 flags. Audio and MP4 muxing remain entirely inside PrimeCap.

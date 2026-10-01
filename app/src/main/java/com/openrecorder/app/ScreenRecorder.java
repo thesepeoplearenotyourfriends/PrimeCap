@@ -46,11 +46,9 @@ final class ScreenRecorder {
     private final int audioSampleRate;
     private final int videoResolution;
     private final int videoFrameRate;
-    private final boolean force16By9Letterboxing;
     private final int videoBitrate;
     private final int videoCodec;
     private final String namingPattern;
-    private final int recordingOrientation;
     private final Listener listener;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final MediaProjection.Callback projectionCallback;
@@ -78,11 +76,9 @@ final class ScreenRecorder {
             int audioSampleRate,
             int videoResolution,
             int videoFrameRate,
-            boolean force16By9Letterboxing,
             int videoBitrate,
             int videoCodec,
             String namingPattern,
-            int recordingOrientation,
             Listener listener) {
         this.context = context.getApplicationContext();
         this.resultCode = resultCode;
@@ -91,11 +87,9 @@ final class ScreenRecorder {
         this.audioSampleRate = RecordingOptions.normalizeSampleRate(audioSampleRate);
         this.videoResolution = RecordingOptions.normalizeVideoResolution(videoResolution);
         this.videoFrameRate = RecordingOptions.normalizeVideoFrameRate(videoFrameRate);
-        this.force16By9Letterboxing = force16By9Letterboxing;
         this.videoBitrate = RecordingOptions.normalizeVideoBitrate(videoBitrate);
         this.videoCodec = RecordingOptions.normalizeVideoCodec(videoCodec);
         this.namingPattern = RecordingOptions.normalizeNamingPattern(namingPattern);
-        this.recordingOrientation = RecordingOptions.normalizeOrientation(recordingOrientation);
         this.listener = listener;
         this.projectionCallback = new MediaProjection.Callback() {
             @Override
@@ -416,16 +410,12 @@ final class ScreenRecorder {
         VideoEncodingProfile.Layout layout = VideoEncodingProfile.resolve(
                 requestedWidth,
                 requestedHeight,
-                recordingOrientation,
                 videoResolution,
-                force16By9Letterboxing,
                 videoBitrate,
                 targetFrameRate);
         return new CaptureSize(
-                layout.outputWidth,
-                layout.outputHeight,
-                layout.contentWidth,
-                layout.contentHeight,
+                layout.width,
+                layout.height,
                 layout.videoBitrate,
                 density,
                 sourceRefreshRate,
@@ -440,7 +430,6 @@ final class ScreenRecorder {
                 size.videoBitrate,
                 videoCodec,
                 size.targetFrameRate,
-                recordingOrientation,
                 getMaximumVideoFileSize(),
                 new PrimeCapVideoRecorder.Listener() {
                     @Override
@@ -520,8 +509,6 @@ final class ScreenRecorder {
     private static final class CaptureSize {
         final int width;
         final int height;
-        final int contentWidth;
-        final int contentHeight;
         final int videoBitrate;
         final int densityDpi;
         final float sourceRefreshRate;
@@ -530,16 +517,12 @@ final class ScreenRecorder {
         CaptureSize(
                 int width,
                 int height,
-                int contentWidth,
-                int contentHeight,
                 int videoBitrate,
                 int densityDpi,
                 float sourceRefreshRate,
                 int targetFrameRate) {
             this.width = width;
             this.height = height;
-            this.contentWidth = contentWidth;
-            this.contentHeight = contentHeight;
             this.videoBitrate = videoBitrate;
             this.densityDpi = densityDpi;
             this.sourceRefreshRate = sourceRefreshRate;
