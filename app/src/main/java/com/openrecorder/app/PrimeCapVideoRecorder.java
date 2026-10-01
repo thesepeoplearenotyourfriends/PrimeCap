@@ -3,21 +3,27 @@ package com.openrecorder.app;
 import android.content.Context;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.ByteBuffer;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Receives shell-daemon video output and writes it directly to RecordingMuxer. */
 final class PrimeCapVideoRecorder {
@@ -61,6 +67,11 @@ final class PrimeCapVideoRecorder {
     private static final long COUNTDOWN_TIMEOUT_MS = 10_000L;
     private static final long SOURCE_CLOCK_TOLERANCE_NANOS = 30_000_000_000L;
     private static final int RELAY_LOG_LIMIT = 16 * 1024;
+    private static final String LAUNCHER_EXEC_PREFIX = "PrimeCap launcher exec";
+    private static final String DAEMON_STDOUT_CLOSED = "\u0000";
+    private static final Pattern DAEMON_READY = Pattern.compile(
+            "^PrimeCap video daemon ready on @primecap_video_daemon "
+                    + "\\(pid=([0-9]+), uid=([0-9]+)\\)$");
 
     private final Context context;
     private final int maxSize;
@@ -90,6 +101,7 @@ final class PrimeCapVideoRecorder {
     private File relayFile;
     private File daemonFile;
     private boolean daemonOwned;
+    private boolean launcherExecSeen;
     private int launchedDaemonPid = -1;
     private final StringBuilder recentDaemonErrors = new StringBuilder();
     private final StringBuilder recentRelayErrors = new StringBuilder();
@@ -324,7 +336,9 @@ final class PrimeCapVideoRecorder {
             daemonPid = input.readInt();
             daemonUid = input.readInt();
             daemonOwned = daemonPid == launchedDaemonPid;
-            Log.i(TAG, "Connected to video daemon pid=" + daemonPid + " uid=" + daemonUid);
+            Log.i(TAG, "PrimeCap startup relay connected at "
+                    + SystemClock.elapsedRealtime() + " ms: pid=" + daemonPid
+                    + " uid=" + daemonUid);
             if (stopRequested) {
                 daemonControl.writeByte(COMMAND_STOP);
                 daemonControl.flush();
@@ -603,70 +617,129 @@ final class PrimeCapVideoRecorder {
     }
 
     private void launchDaemon() throws IOException {
-        String command = PrimeCapDaemonLifecycle.cleanupCommand(DAEMON_PID_PATH) + " && "
-                + shellQuote(LAUNCHER_PATH) + " " + shellQuote(daemonFile.getAbsolutePath())
-                + " " + shellQuote(DAEMON_PID_PATH);
-        daemonProcess = new ProcessBuilder("su", "-c", command).start();
-        drainDaemonErrors(daemonProcess.getErrorStream());
+        Log.i(TAG, "PrimeCap startup launch requested at "
+                + SystemClock.elapsedRealtime() + " ms");
         try {
-            waitForDaemonReady();
+            launchDaemonAttempt();
         } catch (IOException error) {
             terminateOwnedDaemon();
-            throw error;
+            if (!isAddressAlreadyInUse(error)) {
+                throw error;
+            }
+            Log.w(TAG, "PrimeCap socket was already bound; running one stale-daemon migration");
+            cleanupStaleDaemon();
+            synchronized (recentDaemonErrors) {
+                recentDaemonErrors.setLength(0);
+            }
+            Log.i(TAG, "PrimeCap startup launch requested at "
+                    + SystemClock.elapsedRealtime() + " ms (migration retry)");
+            try {
+                launchDaemonAttempt();
+            } catch (IOException retryError) {
+                terminateOwnedDaemon();
+                throw retryError;
+            }
         }
     }
 
-    private void waitForDaemonReady() throws IOException {
+    private void launchDaemonAttempt() throws IOException {
+        launchedDaemonPid = -1;
+        daemonOwned = false;
+        launcherExecSeen = false;
+        String command = shellQuote(LAUNCHER_PATH) + " "
+                + shellQuote(daemonFile.getAbsolutePath()) + " "
+                + shellQuote(DAEMON_PID_PATH);
+        daemonProcess = new ProcessBuilder("su", "-c", command).start();
+        drainDaemonErrors(daemonProcess.getErrorStream());
+        waitForDaemonReady(daemonProcess.getInputStream());
+    }
+
+    private void waitForDaemonReady(InputStream stdout) throws IOException {
         long deadlineNanos = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(START_TIMEOUT_MS);
-        String readinessCommand = PrimeCapDaemonLifecycle.readinessCommand(
-                DAEMON_PID_PATH, START_TIMEOUT_MS);
-        Process readiness = new ProcessBuilder("su", "-c", readinessCommand)
-                .redirectErrorStream(true)
-                .start();
+        LinkedBlockingQueue<String> lines = new LinkedBlockingQueue<>();
+        drainDaemonOutput(stdout, lines);
         try {
             while (System.nanoTime() < deadlineNanos) {
-                if (!daemonProcess.isAlive()) {
-                    readiness.destroyForcibly();
-                    int status = daemonProcess.exitValue();
-                    String reason = status == PrimeCapDaemonLifecycle.SOCKET_CLEAR_FAILURE
-                            ? "stale @primecap_video_daemon could not be cleared"
-                            : "launcher exited with status " + status;
-                    throw daemonLaunchFailure(reason);
-                }
                 long remainingNanos = deadlineNanos - System.nanoTime();
                 long waitMillis = Math.max(1L, Math.min(50L,
                         TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
-                if (readiness.waitFor(waitMillis, TimeUnit.MILLISECONDS)) {
-                    String pidText = readText(readiness.getInputStream()).trim();
-                    if (!pidText.isEmpty()) {
-                        launchedDaemonPid = Integer.parseInt(pidText);
+                String line = lines.poll(waitMillis, TimeUnit.MILLISECONDS);
+                if (line != null && !DAEMON_STDOUT_CLOSED.equals(line)) {
+                    if (line.startsWith(LAUNCHER_EXEC_PREFIX)) {
+                        launcherExecSeen = true;
+                        Log.i(TAG, "PrimeCap startup launcher exec at "
+                                + SystemClock.elapsedRealtime() + " ms: " + line);
                     }
-                    if (readiness.exitValue() == 0) {
+                    Matcher ready = DAEMON_READY.matcher(line);
+                    if (ready.matches()) {
+                        launchedDaemonPid = Integer.parseInt(ready.group(1));
+                        Log.i(TAG, "PrimeCap startup daemon READY received at "
+                                + SystemClock.elapsedRealtime() + " ms: " + line);
                         return;
                     }
-                    if (readiness.exitValue()
-                            == PrimeCapDaemonLifecycle.READINESS_PROCESS_EXITED) {
-                        throw daemonLaunchFailure("launcher process exited before socket readiness");
+                    Log.i(TAG, "Daemon stdout: " + line);
+                }
+                if (!daemonProcess.isAlive()) {
+                    // Give the stdout/stderr drainers a chance to publish final diagnostics.
+                    String finalLine = lines.poll(100, TimeUnit.MILLISECONDS);
+                    if (finalLine != null && !DAEMON_STDOUT_CLOSED.equals(finalLine)) {
+                        Matcher ready = DAEMON_READY.matcher(finalLine);
+                        if (ready.matches()) {
+                            launchedDaemonPid = Integer.parseInt(ready.group(1));
+                            return;
+                        }
                     }
-                    if (readiness.exitValue() == PrimeCapDaemonLifecycle.READINESS_TIMED_OUT) {
-                        throw daemonLaunchFailure("timed out waiting for @primecap_video_daemon");
-                    }
-                    throw daemonLaunchFailure("readiness probe exited with status "
-                            + readiness.exitValue());
+                    throw daemonLaunchFailure("launcher exited with status "
+                            + daemonProcess.exitValue() + " before READY");
                 }
             }
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
-            readiness.destroyForcibly();
-            daemonProcess.destroyForcibly();
             throw new IOException("Interrupted while starting PrimeCap daemon", error);
         } catch (NumberFormatException error) {
-            readiness.destroyForcibly();
-            throw daemonLaunchFailure("launcher published an invalid PID");
+            throw daemonLaunchFailure("daemon READY contained an invalid PID");
         }
-        readiness.destroyForcibly();
-        throw daemonLaunchFailure("timed out waiting for @primecap_video_daemon");
+        throw daemonLaunchFailure("timed out waiting for daemon READY");
+    }
+
+    private void drainDaemonOutput(InputStream stream, LinkedBlockingQueue<String> lines) {
+        Thread logger = new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    lines.offer(line);
+                }
+            } catch (IOException ignored) {
+                // Process teardown closes stdout.
+            } finally {
+                lines.offer(DAEMON_STDOUT_CLOSED);
+            }
+        }, "PrimeCapDaemonOutput");
+        logger.setDaemon(true);
+        logger.start();
+    }
+
+    private boolean isAddressAlreadyInUse(IOException error) {
+        String message = error.getMessage();
+        return message != null && (message.contains("Address already in use")
+                || message.contains("EADDRINUSE"));
+    }
+
+    private void cleanupStaleDaemon() throws IOException {
+        Process cleanup = new ProcessBuilder("su", "-c",
+                PrimeCapDaemonLifecycle.staleCleanupCommand(DAEMON_PID_PATH)).start();
+        String errors = readText(cleanup.getErrorStream());
+        try {
+            if (cleanup.waitFor() != 0) {
+                throw new IOException("Unable to clean up stale PrimeCap daemon: "
+                        + errors.trim());
+            }
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            cleanup.destroyForcibly();
+            throw new IOException("Interrupted while cleaning up stale PrimeCap daemon", error);
+        }
     }
 
     private IOException daemonLaunchFailure(String reason) {
@@ -708,6 +781,9 @@ final class PrimeCapVideoRecorder {
             return;
         }
         int pidToStop = daemonOwned ? daemonPid : launchedDaemonPid;
+        if (pidToStop <= 0 && launcherExecSeen) {
+            pidToStop = readLauncherPidFile();
+        }
         if (pidToStop > 0) {
             try {
                 Process killer = new ProcessBuilder("su", "-c", "kill " + pidToStop).start();
@@ -728,6 +804,27 @@ final class PrimeCapVideoRecorder {
             Thread.currentThread().interrupt();
             process.destroyForcibly();
         }
+    }
+
+    private int readLauncherPidFile() {
+        Process reader = null;
+        try {
+            reader = new ProcessBuilder("su", "-c",
+                    "cat " + shellQuote(DAEMON_PID_PATH) + " 2>/dev/null").start();
+            String value = readText(reader.getInputStream()).trim();
+            if (reader.waitFor(1, TimeUnit.SECONDS) && reader.exitValue() == 0) {
+                return Integer.parseInt(value);
+            }
+        } catch (IOException | NumberFormatException error) {
+            Log.w(TAG, "Unable to read launcher PID file", error);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        } finally {
+            if (reader != null && reader.isAlive()) {
+                reader.destroyForcibly();
+            }
+        }
+        return -1;
     }
 
     private void awaitOwnedDaemonExit() {

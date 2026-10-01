@@ -64,6 +64,8 @@ int main(int argc, char *argv[]) {
     setenv("CLASSPATH", daemon, 1);
     char *const app_process_argv[] = {"app_process", "/", "com.genymobile.scrcpy.Server",
                                       "primecap-daemon", NULL};
+    printf("PrimeCap launcher exec (pid=%d)\n", getpid());
+    fflush(stdout);
     execv("/system/bin/app_process", app_process_argv);
     report_error("exec app_process");
     dlclose(selinux);
