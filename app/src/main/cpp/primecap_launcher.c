@@ -30,6 +30,21 @@ Java_com_genymobile_scrcpy_PrimeCapLauncher_launch(JNIEnv *env, jclass type,
         return;
     }
 
+    /* Resolve setcon while still root in phhsu_daemon, as in the proven prototype. */
+    void *selinux = dlopen("libselinux.so", RTLD_NOW | RTLD_LOCAL);
+    if (selinux == NULL) {
+        errno = ENOSYS;
+        throw_io_exception(env, "loading libselinux");
+        goto done;
+    }
+    setcon_fn setcon = (setcon_fn) dlsym(selinux, "setcon");
+    if (setcon == NULL) {
+        errno = ENOSYS;
+        throw_io_exception(env, "resolving setcon");
+        dlclose(selinux);
+        goto done;
+    }
+
     /* These are the supplementary groups of the physically verified adb shell. */
     const gid_t groups[] = {1004, 1007, 1011, 1015, 1028, 3001,
                             3002, 3003, 3006, 3009, 3011};
@@ -46,17 +61,7 @@ Java_com_genymobile_scrcpy_PrimeCapLauncher_launch(JNIEnv *env, jclass type,
         goto done;
     }
 
-    void *selinux = dlopen("libselinux.so", RTLD_NOW | RTLD_LOCAL);
-    if (selinux == NULL) {
-        errno = ENOSYS;
-        throw_io_exception(env, "loading libselinux");
-        goto done;
-    }
-    setcon_fn setcon = (setcon_fn) dlsym(selinux, "setcon");
-    if (setcon == NULL || setcon("u:r:shell:s0") != 0) {
-        if (setcon == NULL) {
-            errno = ENOSYS;
-        }
+    if (setcon("u:r:shell:s0") != 0) {
         throw_io_exception(env, "setcon");
         dlclose(selinux);
         goto done;

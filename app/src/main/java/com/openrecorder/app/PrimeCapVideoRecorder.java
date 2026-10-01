@@ -68,6 +68,7 @@ final class PrimeCapVideoRecorder {
     private File daemonFile;
     private boolean daemonOwned;
     private int launchedDaemonPid = -1;
+    private final StringBuilder recentDaemonErrors = new StringBuilder();
     private final StringBuilder recentRelayErrors = new StringBuilder();
     private volatile DataOutputStream daemonControl;
     private volatile boolean stopRequested;
@@ -416,24 +417,66 @@ final class PrimeCapVideoRecorder {
         daemonProcess = new ProcessBuilder("su", "-c", command).start();
         drainDaemonErrors(daemonProcess.getErrorStream());
         try {
-            Thread.sleep(350L);
+            waitForDaemonReady();
+        } catch (IOException error) {
+            terminateOwnedDaemon();
+            throw error;
+        }
+    }
+
+    private void waitForDaemonReady() throws IOException {
+        long deadlineNanos = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(START_TIMEOUT_MS);
+        String readinessCommand = "pid=$(cat " + shellQuote(DAEMON_PID_PATH)
+                + " 2>/dev/null) || exit 1; case \"$pid\" in ''|*[!0-9]*) exit 1;; esac; "
+                + "printf '%s\\n' \"$pid\"; "
+                + "kill -0 \"$pid\" 2>/dev/null || exit 2; "
+                + "grep -q ' @primecap_video_daemon$' /proc/net/unix";
+        try {
+            while (System.nanoTime() < deadlineNanos) {
+                if (!daemonProcess.isAlive()) {
+                    throw daemonLaunchFailure("launcher exited with status "
+                            + daemonProcess.exitValue());
+                }
+                Process readiness = new ProcessBuilder("su", "-c", readinessCommand)
+                        .redirectErrorStream(true)
+                        .start();
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                long waitMillis = Math.max(1L, Math.min(1_000L,
+                        TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
+                if (!readiness.waitFor(waitMillis, TimeUnit.MILLISECONDS)) {
+                    readiness.destroyForcibly();
+                } else {
+                    String pidText = readText(readiness.getInputStream()).trim();
+                    if (!pidText.isEmpty()) {
+                        launchedDaemonPid = Integer.parseInt(pidText);
+                    }
+                    if (readiness.exitValue() == 0) {
+                        return;
+                    }
+                    if (readiness.exitValue() == 2) {
+                        throw daemonLaunchFailure("launcher process exited before socket readiness");
+                    }
+                }
+                Thread.sleep(50L);
+            }
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             daemonProcess.destroyForcibly();
             throw new IOException("Interrupted while starting PrimeCap daemon", error);
-        }
-        Process pidReader = new ProcessBuilder("su", "-c", "cat " + DAEMON_PID_PATH).start();
-        String pidText = readText(pidReader.getInputStream()).trim();
-        try {
-            if (pidReader.waitFor() == 0) {
-                launchedDaemonPid = Integer.parseInt(pidText);
-            }
-        } catch (InterruptedException error) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while reading PrimeCap daemon PID", error);
         } catch (NumberFormatException error) {
-            Log.w(TAG, "Launcher did not publish a valid daemon PID: " + pidText);
+            throw daemonLaunchFailure("launcher published an invalid PID");
         }
+        throw daemonLaunchFailure("timed out waiting for @primecap_video_daemon");
+    }
+
+    private IOException daemonLaunchFailure(String reason) {
+        String diagnostics;
+        synchronized (recentDaemonErrors) {
+            diagnostics = recentDaemonErrors.toString().trim();
+        }
+        return new VideoDaemonUnavailableException("Video daemon unavailable: " + reason
+                + (diagnostics.isEmpty() ? "" : ": " + diagnostics));
     }
 
     private void drainDaemonErrors(InputStream stream) {
@@ -442,7 +485,15 @@ final class PrimeCapVideoRecorder {
                 byte[] buffer = new byte[1024];
                 int count;
                 while ((count = stream.read(buffer)) != -1) {
-                    Log.w(TAG, "Daemon stderr: " + new String(buffer, 0, count).trim());
+                    String message = new String(buffer, 0, count);
+                    synchronized (recentDaemonErrors) {
+                        recentDaemonErrors.append(message);
+                        int excess = recentDaemonErrors.length() - RELAY_LOG_LIMIT;
+                        if (excess > 0) {
+                            recentDaemonErrors.delete(0, excess);
+                        }
+                    }
+                    Log.w(TAG, "Daemon stderr: " + message.trim());
                 }
             } catch (IOException ignored) {
             }
