@@ -23,10 +23,10 @@ import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Persistent shell-context H.264 display capture daemon over one local socket. */
+/** Single-session shell-context display capture daemon over one local socket. */
 final class PrimeCapServer {
     private static final int MAGIC = 0x50434150; // PCAP
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
     private static final String SOCKET_NAME = "primecap_video_daemon";
     private static final int COMMAND_START = 1;
     private static final int COMMAND_STOP = 2;
@@ -38,6 +38,8 @@ final class PrimeCapServer {
     private static final int ORIENTATION_AUTOMATIC = 0;
     private static final int ORIENTATION_PORTRAIT = 1;
     private static final int ORIENTATION_LANDSCAPE = 2;
+    private static final int CODEC_H264 = 0;
+    private static final int CODEC_H265 = 1;
 
     private PrimeCapServer() {}
 
@@ -46,25 +48,18 @@ final class PrimeCapServer {
             throw new IllegalArgumentException("primecap-daemon accepts no arguments");
         }
 
-        // Apply framework workarounds once while this process still has the exact
-        // context inherited from adb shell. Every recording session reuses it.
+        // Apply framework workarounds while this process still has the exact
+        // context inherited from adb shell.
         Workarounds.apply();
-        LocalServerSocket server = new LocalServerSocket(SOCKET_NAME);
-        System.out.println("PrimeCap video daemon ready on @" + SOCKET_NAME
-                + " (pid=" + android.os.Process.myPid()
-                + ", uid=" + android.os.Process.myUid() + ")");
-        while (true) {
-            LocalSocket client = server.accept();
-            try {
+        try (LocalServerSocket server = new LocalServerSocket(SOCKET_NAME)) {
+            System.out.println("PrimeCap video daemon ready on @" + SOCKET_NAME
+                    + " (pid=" + android.os.Process.myPid()
+                    + ", uid=" + android.os.Process.myUid() + ")");
+            try (LocalSocket client = server.accept()) {
                 runSession(client);
             } catch (Exception error) {
                 System.err.println("PrimeCap video session failed: " + error.getMessage());
                 error.printStackTrace(System.err);
-            } finally {
-                try {
-                    client.close();
-                } catch (IOException ignored) {
-                }
             }
         }
     }
@@ -81,6 +76,7 @@ final class PrimeCapServer {
         }
         int maxSize = positiveInt("max-size", input.readInt());
         int bitRate = positiveInt("bitrate", input.readInt());
+        VideoCodec videoCodec = readVideoCodec(input.readInt());
         float maxFps = input.readFloat();
         if (!(maxFps > 0) || maxFps > 240) {
             throw new IllegalArgumentException("Invalid fps");
@@ -97,13 +93,18 @@ final class PrimeCapServer {
         output.writeInt(android.os.Process.myUid());
         output.flush();
 
-        PrimeCapSink sink = new PrimeCapSink(output);
+        PrimeCapSink sink = new PrimeCapSink(output, videoCodec);
         try {
-            Options options = createOptions(maxSize, bitRate, maxFps, recordingOrientation);
+            Options options = createOptions(
+                    maxSize, bitRate, videoCodec, maxFps, recordingOrientation);
             SurfaceEncoder encoder = new SurfaceEncoder(new ScreenCapture(null, options), sink, options);
             CountDownLatch finished = new CountDownLatch(1);
             AtomicBoolean stopRequested = new AtomicBoolean();
-            encoder.start(fatalError -> finished.countDown());
+            AtomicBoolean encoderFailed = new AtomicBoolean();
+            encoder.start(fatalError -> {
+                encoderFailed.set(fatalError);
+                finished.countDown();
+            });
             Thread stopReader = new Thread(() -> {
                 try {
                     int command = input.readUnsignedByte();
@@ -123,6 +124,9 @@ final class PrimeCapServer {
                 finished.await();
                 if (stopRequested.get()) {
                     sink.writeEnd();
+                } else if (encoderFailed.get()) {
+                    sink.writeError(videoCodec.getName()
+                            + " encoder failed or is unavailable on this device");
                 } else {
                     sink.writeError("Display encoder stopped unexpectedly");
                 }
@@ -141,16 +145,26 @@ final class PrimeCapServer {
         }
     }
 
-    private static Options createOptions(int maxSize, int bitRate, float maxFps,
-            int recordingOrientation) throws Exception {
+    private static Options createOptions(int maxSize, int bitRate, VideoCodec videoCodec,
+            float maxFps, int recordingOrientation) throws Exception {
         String captureOrientation = resolveCaptureOrientation(recordingOrientation);
         return Options.parse(BuildConfig.VERSION_NAME,
                 "video=true", "audio=false", "control=false",
-                "video_codec=h264", "video_source=display", "display_id=0",
+                "video_codec=" + videoCodec.getName(), "video_source=display", "display_id=0",
                 "max_size=" + maxSize, "video_bit_rate=" + bitRate,
                 "max_fps=" + maxFps, "send_device_meta=false",
                 "send_codec_meta=false", "send_frame_meta=false", "cleanup=false",
                 "capture_orientation=" + captureOrientation);
+    }
+
+    private static VideoCodec readVideoCodec(int codec) {
+        if (codec == CODEC_H264) {
+            return VideoCodec.H264;
+        }
+        if (codec == CODEC_H265) {
+            return VideoCodec.H265;
+        }
+        throw new IllegalArgumentException("Unsupported video codec: " + codec);
     }
 
     private static int positiveInt(String name, int value) {
@@ -192,19 +206,21 @@ final class PrimeCapServer {
 
     private static final class PrimeCapSink implements VideoPacketSink {
         private final DataOutputStream output;
+        private final VideoCodec videoCodec;
         private int width;
         private int height;
         private boolean formatSent;
         private byte[] pendingCsd0 = new byte[0];
         private byte[] pendingCsd1 = new byte[0];
 
-        PrimeCapSink(DataOutputStream output) {
+        PrimeCapSink(DataOutputStream output, VideoCodec videoCodec) {
             this.output = output;
+            this.videoCodec = videoCodec;
         }
 
         @Override
         public Codec getCodec() {
-            return VideoCodec.H264;
+            return videoCodec;
         }
 
         @Override
@@ -269,11 +285,11 @@ final class PrimeCapServer {
             byte[] csd0 = pendingCsd0;
             byte[] csd1 = pendingCsd1;
             int csdLength = csd0.length + csd1.length;
-            if (width <= 0 || height <= 0 || !hasH264ParameterSets(csd0, csd1)) {
+            if (width <= 0 || height <= 0 || !hasRequiredParameterSets(csd0, csd1)) {
                 return;
             }
             if (csdLength > MAX_PACKET_SIZE - 16) {
-                throw new IOException("H.264 codec configuration is too large");
+                throw new IOException(videoCodec.getName() + " codec configuration is too large");
             }
             output.writeByte(TYPE_FORMAT);
             output.writeInt(16 + csdLength);
@@ -287,12 +303,13 @@ final class PrimeCapServer {
             formatSent = true;
         }
 
-        private static boolean hasH264ParameterSets(byte[] first, byte[] second) {
+        private boolean hasRequiredParameterSets(byte[] first, byte[] second) {
             int types = parameterSetTypes(first) | parameterSetTypes(second);
-            return (types & 1) != 0 && (types & 2) != 0;
+            int required = videoCodec == VideoCodec.H265 ? 1 | 2 | 4 : 1 | 2;
+            return (types & required) == required;
         }
 
-        private static int parameterSetTypes(byte[] data) {
+        private int parameterSetTypes(byte[] data) {
             int types = 0;
             for (int i = 0; i + 3 < data.length; ++i) {
                 int startCodeLength = data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1
@@ -300,11 +317,23 @@ final class PrimeCapServer {
                         : i + 4 < data.length && data[i] == 0 && data[i + 1] == 0
                                 && data[i + 2] == 0 && data[i + 3] == 1 ? 4 : 0;
                 if (startCodeLength > 0 && i + startCodeLength < data.length) {
-                    int nalType = data[i + startCodeLength] & 0x1f;
-                    if (nalType == 7) {
-                        types |= 1;
-                    } else if (nalType == 8) {
-                        types |= 2;
+                    int header = data[i + startCodeLength] & 0xff;
+                    if (videoCodec == VideoCodec.H265) {
+                        int nalType = (header >> 1) & 0x3f;
+                        if (nalType == 32) {
+                            types |= 1; // VPS
+                        } else if (nalType == 33) {
+                            types |= 2; // SPS
+                        } else if (nalType == 34) {
+                            types |= 4; // PPS
+                        }
+                    } else {
+                        int nalType = header & 0x1f;
+                        if (nalType == 7) {
+                            types |= 1; // SPS
+                        } else if (nalType == 8) {
+                            types |= 2; // PPS
+                        }
                     }
                 }
             }
