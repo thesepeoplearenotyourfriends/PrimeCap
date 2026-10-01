@@ -2,9 +2,6 @@
 
 package com.openrecorder.app
 
-import android.content.ContentResolver
-import android.provider.Settings
-
 internal enum class DeviceRotationState(val userRotation: Int?) {
     UNLOCKED(null),
     LOCKED_90(1),
@@ -12,38 +9,51 @@ internal enum class DeviceRotationState(val userRotation: Int?) {
 }
 
 internal object DeviceRotationController {
-    fun read(contentResolver: ContentResolver): DeviceRotationState? {
-        val sensorRotation = Settings.System.getInt(
-            contentResolver,
-            Settings.System.ACCELEROMETER_ROTATION,
-            1,
-        )
-        if (sensorRotation != 0) return DeviceRotationState.UNLOCKED
+    private val userRotationModePattern = Regex("\\bmUserRotationMode=(\\S+)")
+    private val userRotationPattern = Regex("\\bmUserRotation=(\\S+)")
+    private val fixedToUserRotationPattern = Regex("\\bmFixedToUserRotation=(\\S+)")
 
-        return when (
-            Settings.System.getInt(contentResolver, Settings.System.USER_ROTATION, 0)
-        ) {
-            1 -> DeviceRotationState.LOCKED_90
-            3 -> DeviceRotationState.LOCKED_270
+    fun read(): DeviceRotationState? {
+        val output = runRootCommand("dumpsys window displays") ?: return null
+        return parse(output)
+    }
+
+    internal fun parse(output: String): DeviceRotationState? {
+        val mode = userRotationModePattern.find(output)?.groupValues?.get(1)
+        val rotation = userRotationPattern.find(output)?.groupValues?.get(1)
+        val fixed = fixedToUserRotationPattern.find(output)?.groupValues?.get(1)
+
+        if (mode == "USER_ROTATION_FREE" && fixed == "false") {
+            return DeviceRotationState.UNLOCKED
+        }
+        if (mode != "USER_ROTATION_LOCKED" || fixed != "true") return null
+
+        return when (rotation) {
+            "ROTATION_90" -> DeviceRotationState.LOCKED_90
+            "ROTATION_270" -> DeviceRotationState.LOCKED_270
             else -> null
         }
     }
 
     fun apply(state: DeviceRotationState): Boolean {
         val command = if (state == DeviceRotationState.UNLOCKED) {
-            "settings put system accelerometer_rotation 1"
+            "wm set-fix-to-user-rotation disabled && wm set-user-rotation free"
         } else {
-            "settings put system accelerometer_rotation 0; " +
-                "settings put system user_rotation ${state.userRotation}"
+            "wm set-user-rotation lock ${state.userRotation} && " +
+                "wm set-fix-to-user-rotation enabled"
         }
+        return runRootCommand(command) != null
+    }
+
+    private fun runRootCommand(command: String): String? {
         return try {
             val process = ProcessBuilder("su", "-c", command)
                 .redirectErrorStream(true)
                 .start()
-            process.inputStream.bufferedReader().use { it.readText() }
-            process.waitFor() == 0
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            if (process.waitFor() == 0) output else null
         } catch (_: Exception) {
-            false
+            null
         }
     }
 }

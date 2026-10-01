@@ -128,7 +128,7 @@ class MainActivity : ComponentActivity() {
         recordScreenUiState = mutableStateOf(
             RecordScreenUiState(
                 recordingState = RecordingState.get(),
-                deviceRotationState = DeviceRotationController.read(contentResolver),
+                deviceRotationState = DeviceRotationController.read(),
             ),
         )
         recordingSettingsUiState = mutableStateOf(
@@ -343,7 +343,7 @@ class MainActivity : ComponentActivity() {
         updateRecordScreenUiState {
             it.copy(
                 recordingState = RecordingState.get(),
-                deviceRotationState = DeviceRotationController.read(contentResolver),
+                deviceRotationState = DeviceRotationController.read(),
             )
         }
         if (recordingsLoaded && recordingsStale && !recordingsUiState.value.deleting) {
@@ -565,7 +565,7 @@ class MainActivity : ComponentActivity() {
         }
         executor.execute {
             val changed = DeviceRotationController.apply(state)
-            val actualState = DeviceRotationController.read(contentResolver)
+            val actualState = DeviceRotationController.read()
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 updateRecordScreenUiState {
