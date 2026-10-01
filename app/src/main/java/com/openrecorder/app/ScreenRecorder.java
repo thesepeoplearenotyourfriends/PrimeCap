@@ -31,6 +31,7 @@ final class ScreenRecorder {
         void onRecorderLimitReached();
         void onRecorderError(Exception error);
         void onAudioCaptureFailed();
+        void onPreparationFinalCountdownStarted(int durationSeconds);
     }
 
     private static final String TAG = "ScreenRecorder";
@@ -47,13 +48,14 @@ final class ScreenRecorder {
     private final int videoFrameRate;
     private final boolean force16By9Letterboxing;
     private final int videoBitrate;
+    private final int videoCodec;
     private final String namingPattern;
     private final int recordingOrientation;
     private final Listener listener;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final MediaProjection.Callback projectionCallback;
     private MediaProjection projection;
-    private PrimeCapVideoRecorder videoRecorder;
+    private volatile PrimeCapVideoRecorder videoRecorder;
     private InternalAudioRecorder audioRecorder;
     private RecordingMuxer recordingMuxer;
     private RecordingMuxer.Track videoOutputTrack;
@@ -91,6 +93,7 @@ final class ScreenRecorder {
         this.videoFrameRate = RecordingOptions.normalizeVideoFrameRate(videoFrameRate);
         this.force16By9Letterboxing = force16By9Letterboxing;
         this.videoBitrate = RecordingOptions.normalizeVideoBitrate(videoBitrate);
+        this.videoCodec = RecordingOptions.normalizeVideoCodec(videoCodec);
         this.namingPattern = RecordingOptions.normalizeNamingPattern(namingPattern);
         this.recordingOrientation = RecordingOptions.normalizeOrientation(recordingOrientation);
         this.listener = listener;
@@ -121,8 +124,9 @@ final class ScreenRecorder {
     }
 
     static boolean isVideoCodecSupported(int requestedCodec) {
-        return RecordingOptions.normalizeVideoCodec(requestedCodec)
-                == RecordingOptions.VIDEO_CODEC_H264;
+        int codec = RecordingOptions.normalizeVideoCodec(requestedCodec);
+        return codec == RecordingOptions.VIDEO_CODEC_H264
+                || codec == RecordingOptions.VIDEO_CODEC_H265;
     }
 
     synchronized void prepare() throws IOException {
@@ -168,8 +172,8 @@ final class ScreenRecorder {
         // Daemon connection and FORMAT negotiation are preparation,
         // not recorded time. Arm the shared timeline only once video is usable.
         videoRecorder.start();
-        timeline = new RecordingTimeline(System.nanoTime());
-        videoRecorder.arm(timeline);
+        long recordingBoundaryNanos = videoRecorder.awaitRecordingBoundary();
+        timeline = new RecordingTimeline(recordingBoundaryNanos);
         if (audioRecorder != null) {
             try {
                 audioRecorder.start(timeline);
@@ -177,6 +181,7 @@ final class ScreenRecorder {
                 disableAudio(error);
             }
         }
+        videoRecorder.arm(timeline);
     }
 
     synchronized void pause() throws IOException {
@@ -265,6 +270,20 @@ final class ScreenRecorder {
         releaseCaptureResources();
         if (failure != null) {
             throw failure;
+        }
+    }
+
+    void cancelPreparation() {
+        PrimeCapVideoRecorder activeVideoRecorder = videoRecorder;
+        if (timeline == null && activeVideoRecorder != null) {
+            activeVideoRecorder.cancelPreparation();
+        }
+    }
+
+    void onPreparationOverlayCleared() {
+        PrimeCapVideoRecorder activeVideoRecorder = videoRecorder;
+        if (timeline == null && activeVideoRecorder != null) {
+            activeVideoRecorder.onPreparationOverlayCleared();
         }
     }
 
@@ -425,10 +444,16 @@ final class ScreenRecorder {
                 size.width,
                 size.height,
                 size.videoBitrate,
+                videoCodec,
                 size.targetFrameRate,
                 recordingOrientation,
                 getMaximumVideoFileSize(),
                 new PrimeCapVideoRecorder.Listener() {
+                    @Override
+                    public void onFinalCountdownStarted(int durationSeconds) {
+                        listener.onPreparationFinalCountdownStarted(durationSeconds);
+                    }
+
                     @Override
                     public void onLimitReached() {
                         listener.onRecorderLimitReached();
@@ -440,7 +465,9 @@ final class ScreenRecorder {
                     }
                 });
         videoRecorder.prepare();
-        Log.i(TAG, "PrimeCap H.264 profile: maximum=" + Math.max(size.width, size.height)
+        String codecName = videoCodec == RecordingOptions.VIDEO_CODEC_H265 ? "H.265" : "H.264";
+        Log.i(TAG, "PrimeCap " + codecName + " profile: maximum="
+                + Math.max(size.width, size.height)
                 + ", frameRate=" + size.targetFrameRate + " fps"
                 + ", target=" + size.videoBitrate + " bps");
     }

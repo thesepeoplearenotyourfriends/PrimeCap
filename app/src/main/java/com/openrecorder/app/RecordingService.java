@@ -70,6 +70,8 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     private volatile ScreenRecorder recorder;
     private volatile Runnable pendingStart;
     private Runnable pendingNotificationRestore;
+    private Runnable preparationCountdownTick;
+    private Toast preparationCountdownToast;
     private volatile boolean paused;
     private volatile long recordingStartedAtElapsedRealtime;
     private volatile long pausedAtElapsedRealtime;
@@ -209,6 +211,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
         try {
             startForegroundCompat(createRecordingNotification(true));
             setRecordingState(RecordingState.PREPARING);
+            startPreparationIndicator();
 
             int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
             Intent resultData;
@@ -321,6 +324,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
 
         try {
             pendingRecorder.start();
+            runOnMainThread(this::cancelPreparationCountdown);
             recorderStarted.set(true);
             recordingStartedAtElapsedRealtime = SystemClock.elapsedRealtime();
             pausedAtElapsedRealtime = 0L;
@@ -640,6 +644,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
         if (finished.get() || !stopping.compareAndSet(false, true)) {
             return;
         }
+        runOnMainThread(this::cancelPreparationCountdown);
 
         Runnable scheduledStart = pendingStart;
         if (scheduledStart != null) {
@@ -663,6 +668,9 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
         }
         recorder = null;
         boolean shouldSave = recorderStarted.get();
+        if (!shouldSave) {
+            activeRecorder.cancelPreparation();
+        }
         if (shouldSave) {
             setRecordingState(RecordingState.SAVING);
             notificationManager.notify(NOTIFICATION_ID, createSavingNotification());
@@ -702,6 +710,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
 
     private void failRecording(Exception error, ScreenRecorder failedRecorder) {
         Log.e(TAG, "Unable to start recording", error);
+        runOnMainThread(this::cancelPreparationCountdown);
         if (failedRecorder != null) {
             if (recorder == failedRecorder) {
                 recorder = null;
@@ -732,6 +741,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             return;
         }
         mainHandler.post(() -> {
+            cancelPreparationCountdown();
             cancelPendingNotificationRestore();
             stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
@@ -775,12 +785,84 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     }
 
     @Override
+    public void onPreparationFinalCountdownStarted(int durationSeconds) {
+        runOnMainThread(() -> startPreparationCountdown(durationSeconds));
+    }
+
+    private void startPreparationIndicator() {
+        cancelPreparationCountdown();
+        preparationCountdownToast = Toast.makeText(
+                this,
+                R.string.preparing_recording,
+                Toast.LENGTH_SHORT);
+        preparationCountdownTick = new Runnable() {
+            @Override
+            public void run() {
+                if (preparationCountdownTick != this || stopping.get() || finished.get()) {
+                    cancelPreparationCountdown();
+                    return;
+                }
+                preparationCountdownToast.show();
+                mainHandler.postDelayed(this, 1_000L);
+            }
+        };
+        preparationCountdownTick.run();
+    }
+
+    private void startPreparationCountdown(int durationSeconds) {
+        Runnable indicator = preparationCountdownTick;
+        if (indicator != null) {
+            mainHandler.removeCallbacks(indicator);
+        }
+        if (preparationCountdownToast == null) {
+            preparationCountdownToast = Toast.makeText(this, "", Toast.LENGTH_SHORT);
+        }
+        final int[] seconds = {durationSeconds};
+        preparationCountdownTick = new Runnable() {
+            @Override
+            public void run() {
+                if (preparationCountdownTick != this || stopping.get() || finished.get()) {
+                    cancelPreparationCountdown();
+                    return;
+                }
+                if (seconds[0] <= 1) {
+                    cancelPreparationCountdown();
+                    ScreenRecorder preparingRecorder = recorder;
+                    if (preparingRecorder != null) {
+                        preparingRecorder.onPreparationOverlayCleared();
+                    }
+                    return;
+                }
+                preparationCountdownToast.setText(
+                        getString(R.string.preparing_recording_countdown, seconds[0]));
+                preparationCountdownToast.show();
+                seconds[0]--;
+                mainHandler.postDelayed(this, 1_000L);
+            }
+        };
+        preparationCountdownTick.run();
+    }
+
+    private void cancelPreparationCountdown() {
+        Runnable tick = preparationCountdownTick;
+        preparationCountdownTick = null;
+        if (tick != null) {
+            mainHandler.removeCallbacks(tick);
+        }
+        if (preparationCountdownToast != null) {
+            preparationCountdownToast.cancel();
+            preparationCountdownToast = null;
+        }
+    }
+
+    @Override
     public IBinder onBind(Intent intent) {
         return null;
     }
 
     @Override
     public void onDestroy() {
+        cancelPreparationCountdown();
         cancelPendingNotificationRestore();
         Runnable scheduledStart = pendingStart;
         if (scheduledStart != null) {

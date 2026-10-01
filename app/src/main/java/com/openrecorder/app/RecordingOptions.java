@@ -6,6 +6,11 @@ final class RecordingOptions {
     static final int DEFAULT_SAMPLE_RATE = SAMPLE_RATE_44_1_KHZ;
 
     static final int VIDEO_BITRATE_AUTO = 0;
+    static final int VIDEO_BITRATE_750_KBPS = 750_000;
+    static final int VIDEO_BITRATE_1_MBPS = 1_000_000;
+    static final int VIDEO_BITRATE_1_5_MBPS = 1_500_000;
+    static final int VIDEO_BITRATE_2_MBPS = 2_000_000;
+    static final int VIDEO_BITRATE_3_MBPS = 3_000_000;
     static final int VIDEO_BITRATE_4_MBPS = 4_000_000;
     static final int VIDEO_BITRATE_8_MBPS = 8_000_000;
     static final int VIDEO_BITRATE_16_MBPS = 16_000_000;
@@ -54,7 +59,12 @@ final class RecordingOptions {
     }
 
     static int normalizeVideoBitrate(int value) {
-        if (value == VIDEO_BITRATE_4_MBPS
+        if (value == VIDEO_BITRATE_750_KBPS
+                || value == VIDEO_BITRATE_1_MBPS
+                || value == VIDEO_BITRATE_1_5_MBPS
+                || value == VIDEO_BITRATE_2_MBPS
+                || value == VIDEO_BITRATE_3_MBPS
+                || value == VIDEO_BITRATE_4_MBPS
                 || value == VIDEO_BITRATE_8_MBPS
                 || value == VIDEO_BITRATE_16_MBPS
                 || value == VIDEO_BITRATE_24_MBPS) {

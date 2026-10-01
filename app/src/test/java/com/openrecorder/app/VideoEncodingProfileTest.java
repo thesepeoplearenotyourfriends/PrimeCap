@@ -121,6 +121,11 @@ public final class VideoEncodingProfileTest {
     @Test
     public void everyFixedBitrateIsPassedThroughExactly() {
         int[] fixedBitrates = {
+                RecordingOptions.VIDEO_BITRATE_750_KBPS,
+                RecordingOptions.VIDEO_BITRATE_1_MBPS,
+                RecordingOptions.VIDEO_BITRATE_1_5_MBPS,
+                RecordingOptions.VIDEO_BITRATE_2_MBPS,
+                RecordingOptions.VIDEO_BITRATE_3_MBPS,
                 RecordingOptions.VIDEO_BITRATE_4_MBPS,
                 RecordingOptions.VIDEO_BITRATE_8_MBPS,
                 RecordingOptions.VIDEO_BITRATE_16_MBPS,

@@ -235,6 +235,11 @@ internal fun SettingsScreen(
     val videoBitrateOptions = remember(context) {
         listOf(
             context.getString(R.string.video_bitrate_auto),
+            context.getString(R.string.video_bitrate_0_75),
+            context.getString(R.string.video_bitrate_1),
+            context.getString(R.string.video_bitrate_1_5),
+            context.getString(R.string.video_bitrate_2),
+            context.getString(R.string.video_bitrate_3),
             context.getString(R.string.video_bitrate_4),
             context.getString(R.string.video_bitrate_8),
             context.getString(R.string.video_bitrate_16),
