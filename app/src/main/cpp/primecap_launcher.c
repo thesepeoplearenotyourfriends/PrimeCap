@@ -21,6 +21,9 @@ int main(int argc, char *argv[]) {
     }
     const char *daemon = argv[1];
     const char *pid_file = argv[2];
+    if (unlink(pid_file) != 0 && errno != ENOENT) {
+        return report_error("clearing daemon pid");
+    }
 
     /* Resolve setcon while still root in phhsu_daemon, as in the proven prototype. */
     void *selinux = dlopen("libselinux.so", RTLD_NOW | RTLD_LOCAL);

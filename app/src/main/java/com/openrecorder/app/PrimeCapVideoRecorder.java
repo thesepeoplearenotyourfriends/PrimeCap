@@ -51,7 +51,6 @@ final class PrimeCapVideoRecorder {
     private static final int TYPE_END = 3;
     private static final int TYPE_ERROR = 4;
     private static final int MAX_PAYLOAD = 16 * 1024 * 1024;
-    private static final long START_TIMEOUT_MS = 12_000L;
     private static final long STOP_TIMEOUT_MS = 8_000L;
     private static final long DAEMON_EXIT_TIMEOUT_MS = 2_000L;
     static final int MINIMUM_WARMUP_SECONDS = 20;
@@ -101,7 +100,6 @@ final class PrimeCapVideoRecorder {
     private File relayFile;
     private File daemonFile;
     private boolean daemonOwned;
-    private boolean launcherExecSeen;
     private int launchedDaemonPid = -1;
     private final StringBuilder recentDaemonErrors = new StringBuilder();
     private final StringBuilder recentRelayErrors = new StringBuilder();
@@ -134,11 +132,14 @@ final class PrimeCapVideoRecorder {
         this.listener = listener;
     }
 
-    synchronized void prepare() throws IOException {
+    void prepare() throws IOException {
         if (relayFile == null) {
             relayFile = deployAsset(RELAY_ASSET, RELAY_PATH);
             daemonFile = deployAsset(DAEMON_ASSET, DAEMON_PATH);
             deployAsset(LAUNCHER_ASSET, LAUNCHER_PATH, "0755");
+            if (released) {
+                throw new IOException("PrimeCap daemon startup was cancelled");
+            }
             launchDaemon();
         }
     }
@@ -150,7 +151,7 @@ final class PrimeCapVideoRecorder {
         outputTrack = track;
     }
 
-    synchronized void start() throws IOException {
+    void start() throws IOException {
         if (started || outputTrack == null) {
             throw new IllegalStateException("Video recorder is not configured");
         }
@@ -158,19 +159,12 @@ final class PrimeCapVideoRecorder {
         receiverThread = new Thread(this::receive, "PrimeCapVideoReceiver");
         receiverThread.start();
 
-        boolean ready;
         try {
-            ready = formatReady.await(START_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            formatReady.await();
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             terminateRelay();
             throw new IOException("Interrupted while starting PrimeCap video", error);
-        }
-        if (!ready) {
-            terminateRelay();
-            terminateOwnedDaemon();
-            throw new VideoDaemonUnavailableException(
-                    "Video daemon unavailable: timed out waiting for video format");
         }
         Exception startupFailure = failure.get();
         if (startupFailure != null) {
@@ -255,6 +249,7 @@ final class PrimeCapVideoRecorder {
         released = true;
         timelineReady.countDown();
         requestStop();
+        terminateOwnedDaemon();
     }
 
     synchronized void onPreparationOverlayCleared() {
@@ -623,6 +618,9 @@ final class PrimeCapVideoRecorder {
             launchDaemonAttempt();
         } catch (IOException error) {
             terminateOwnedDaemon();
+            if (released) {
+                throw new IOException("PrimeCap daemon startup was cancelled", error);
+            }
             if (!isAddressAlreadyInUse(error)) {
                 throw error;
             }
@@ -645,54 +643,48 @@ final class PrimeCapVideoRecorder {
     private void launchDaemonAttempt() throws IOException {
         launchedDaemonPid = -1;
         daemonOwned = false;
-        launcherExecSeen = false;
         String command = shellQuote(LAUNCHER_PATH) + " "
                 + shellQuote(daemonFile.getAbsolutePath()) + " "
                 + shellQuote(DAEMON_PID_PATH);
-        daemonProcess = new ProcessBuilder("su", "-c", command).start();
-        drainDaemonErrors(daemonProcess.getErrorStream());
-        waitForDaemonReady(daemonProcess.getInputStream());
+        Process process = new ProcessBuilder("su", "-c", command).start();
+        synchronized (this) {
+            if (released) {
+                process.destroyForcibly();
+                throw new IOException("PrimeCap daemon startup was cancelled");
+            }
+            daemonProcess = process;
+        }
+        Thread diagnostics = drainDaemonErrors(process.getErrorStream());
+        waitForDaemonReady(process.getInputStream(), diagnostics);
     }
 
-    private void waitForDaemonReady(InputStream stdout) throws IOException {
-        long deadlineNanos = System.nanoTime()
-                + TimeUnit.MILLISECONDS.toNanos(START_TIMEOUT_MS);
+    private void waitForDaemonReady(InputStream stdout, Thread diagnostics) throws IOException {
         LinkedBlockingQueue<String> lines = new LinkedBlockingQueue<>();
         drainDaemonOutput(stdout, lines);
         try {
-            while (System.nanoTime() < deadlineNanos) {
-                long remainingNanos = deadlineNanos - System.nanoTime();
-                long waitMillis = Math.max(1L, Math.min(50L,
-                        TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
-                String line = lines.poll(waitMillis, TimeUnit.MILLISECONDS);
-                if (line != null && !DAEMON_STDOUT_CLOSED.equals(line)) {
-                    if (line.startsWith(LAUNCHER_EXEC_PREFIX)) {
-                        launcherExecSeen = true;
-                        Log.i(TAG, "PrimeCap startup launcher exec at "
-                                + SystemClock.elapsedRealtime() + " ms: " + line);
-                    }
-                    Matcher ready = DAEMON_READY.matcher(line);
-                    if (ready.matches()) {
-                        launchedDaemonPid = Integer.parseInt(ready.group(1));
-                        Log.i(TAG, "PrimeCap startup daemon READY received at "
-                                + SystemClock.elapsedRealtime() + " ms: " + line);
-                        return;
-                    }
-                    Log.i(TAG, "Daemon stdout: " + line);
+            while (true) {
+                String line = lines.take();
+                if (released) {
+                    throw new IOException("PrimeCap daemon startup was cancelled");
                 }
-                if (!daemonProcess.isAlive()) {
-                    // Give the stdout/stderr drainers a chance to publish final diagnostics.
-                    String finalLine = lines.poll(100, TimeUnit.MILLISECONDS);
-                    if (finalLine != null && !DAEMON_STDOUT_CLOSED.equals(finalLine)) {
-                        Matcher ready = DAEMON_READY.matcher(finalLine);
-                        if (ready.matches()) {
-                            launchedDaemonPid = Integer.parseInt(ready.group(1));
-                            return;
-                        }
-                    }
+                if (DAEMON_STDOUT_CLOSED.equals(line)) {
+                    daemonProcess.waitFor();
+                    diagnostics.join();
                     throw daemonLaunchFailure("launcher exited with status "
                             + daemonProcess.exitValue() + " before READY");
                 }
+                if (line.startsWith(LAUNCHER_EXEC_PREFIX)) {
+                    Log.i(TAG, "PrimeCap startup launcher exec at "
+                            + SystemClock.elapsedRealtime() + " ms: " + line);
+                }
+                Matcher ready = DAEMON_READY.matcher(line);
+                if (ready.matches()) {
+                    launchedDaemonPid = Integer.parseInt(ready.group(1));
+                    Log.i(TAG, "PrimeCap startup daemon READY received at "
+                            + SystemClock.elapsedRealtime() + " ms: " + line);
+                    return;
+                }
+                Log.i(TAG, "Daemon stdout: " + line);
             }
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
@@ -700,7 +692,6 @@ final class PrimeCapVideoRecorder {
         } catch (NumberFormatException error) {
             throw daemonLaunchFailure("daemon READY contained an invalid PID");
         }
-        throw daemonLaunchFailure("timed out waiting for daemon READY");
     }
 
     private void drainDaemonOutput(InputStream stream, LinkedBlockingQueue<String> lines) {
@@ -751,7 +742,7 @@ final class PrimeCapVideoRecorder {
                 + (diagnostics.isEmpty() ? "" : ": " + diagnostics));
     }
 
-    private void drainDaemonErrors(InputStream stream) {
+    private Thread drainDaemonErrors(InputStream stream) {
         Thread logger = new Thread(() -> {
             try {
                 byte[] buffer = new byte[1024];
@@ -772,6 +763,7 @@ final class PrimeCapVideoRecorder {
         }, "PrimeCapDaemonDiagnostics");
         logger.setDaemon(true);
         logger.start();
+        return logger;
     }
 
     private synchronized void terminateOwnedDaemon() {
@@ -781,7 +773,7 @@ final class PrimeCapVideoRecorder {
             return;
         }
         int pidToStop = daemonOwned ? daemonPid : launchedDaemonPid;
-        if (pidToStop <= 0 && launcherExecSeen) {
+        if (pidToStop <= 0) {
             pidToStop = readLauncherPidFile();
         }
         if (pidToStop > 0) {
