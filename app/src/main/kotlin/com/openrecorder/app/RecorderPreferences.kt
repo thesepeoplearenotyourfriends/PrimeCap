@@ -51,7 +51,7 @@ internal class RecorderPreferences(context: Context) {
     }
 
     fun loadAudioSource(): AudioSource = AudioSource.fromOrdinal(
-        preferences.getInt(KEY_AUDIO_SOURCE, AudioSource.NONE.ordinal),
+        preferences.getInt(KEY_AUDIO_SOURCE, AudioSource.INTERNAL.ordinal),
     )
 
     fun saveAudioSource(value: AudioSource) {
@@ -107,16 +107,6 @@ internal class RecorderPreferences(context: Context) {
         preferences.edit().putBoolean(KEY_FORCE_16_BY_9_LETTERBOXING, value).apply()
     }
 
-    fun loadVideoCodec(): Int = RecordingOptions.normalizeVideoCodec(
-        preferences.getInt(KEY_VIDEO_CODEC, RecordingOptions.DEFAULT_VIDEO_CODEC),
-    )
-
-    fun saveVideoCodec(value: Int) {
-        preferences.edit()
-            .putInt(KEY_VIDEO_CODEC, RecordingOptions.normalizeVideoCodec(value))
-            .apply()
-    }
-
     fun loadCountdownSeconds(): Int = RecordingOptions.normalizeCountdownSeconds(
         preferences.getInt(KEY_COUNTDOWN_SECONDS, RecordingOptions.DEFAULT_COUNTDOWN_SECONDS),
     )
@@ -124,6 +114,22 @@ internal class RecorderPreferences(context: Context) {
     fun saveCountdownSeconds(value: Int) {
         preferences.edit()
             .putInt(KEY_COUNTDOWN_SECONDS, RecordingOptions.normalizeCountdownSeconds(value))
+            .apply()
+    }
+
+    fun loadRecordingTimeoutMinutes(): Int = RecordingOptions.normalizeRecordingTimeoutMinutes(
+        preferences.getInt(
+            KEY_RECORDING_TIMEOUT_MINUTES,
+            RecordingOptions.DEFAULT_RECORDING_TIMEOUT_MINUTES,
+        ),
+    )
+
+    fun saveRecordingTimeoutMinutes(value: Int) {
+        preferences.edit()
+            .putInt(
+                KEY_RECORDING_TIMEOUT_MINUTES,
+                RecordingOptions.normalizeRecordingTimeoutMinutes(value),
+            )
             .apply()
     }
 
@@ -158,8 +164,8 @@ internal class RecorderPreferences(context: Context) {
         const val KEY_VIDEO_RESOLUTION = "video_resolution"
         const val KEY_VIDEO_FRAME_RATE = "video_frame_rate"
         const val KEY_FORCE_16_BY_9_LETTERBOXING = "force_16_by_9_letterboxing"
-        const val KEY_VIDEO_CODEC = "video_codec"
         const val KEY_COUNTDOWN_SECONDS = "countdown_seconds"
+        const val KEY_RECORDING_TIMEOUT_MINUTES = "recording_timeout_minutes"
         const val KEY_ORIENTATION = "recording_orientation"
         const val KEY_NAMING_PATTERN = "naming_pattern"
     }

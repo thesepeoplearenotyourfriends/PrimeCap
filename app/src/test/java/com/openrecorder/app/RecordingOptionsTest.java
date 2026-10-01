@@ -17,10 +17,20 @@ public final class RecordingOptionsTest {
     }
 
     @Test
-    public void h265CodecSelectionIsPreserved() {
+    public void allCodecSelectionsUseH264() {
         assertEquals(
-                RecordingOptions.VIDEO_CODEC_H265,
-                RecordingOptions.normalizeVideoCodec(RecordingOptions.VIDEO_CODEC_H265));
+                RecordingOptions.VIDEO_CODEC_H264,
+                RecordingOptions.normalizeVideoCodec(1));
+    }
+
+    @Test
+    public void recordingTimeoutAcceptsOnlyAvailableWholeMinuteValues() {
+        int[] timeouts = {1, 5, 10, 30, 60};
+        for (int timeout : timeouts) {
+            assertEquals(timeout, RecordingOptions.normalizeRecordingTimeoutMinutes(timeout));
+        }
+        assertEquals(0, RecordingOptions.normalizeRecordingTimeoutMinutes(-1));
+        assertEquals(0, RecordingOptions.normalizeRecordingTimeoutMinutes(2));
     }
 
     @Test
@@ -29,16 +39,19 @@ public final class RecordingOptionsTest {
                 RecordingOptions.SAMPLE_RATE_44_1_KHZ,
                 RecordingOptions.DEFAULT_SAMPLE_RATE);
         assertEquals(
-                RecordingOptions.VIDEO_RESOLUTION_NATIVE,
+                RecordingOptions.VIDEO_RESOLUTION_720P,
                 RecordingOptions.DEFAULT_VIDEO_RESOLUTION);
         assertEquals(
-                RecordingOptions.VIDEO_FRAME_RATE_AUTO,
+                RecordingOptions.VIDEO_FRAME_RATE_30_FPS,
                 RecordingOptions.DEFAULT_VIDEO_FRAME_RATE);
         assertEquals(
                 RecordingOptions.VIDEO_CODEC_H264,
                 RecordingOptions.DEFAULT_VIDEO_CODEC);
         assertEquals(
-                RecordingOptions.VIDEO_BITRATE_AUTO,
+                RecordingOptions.VIDEO_BITRATE_2_MBPS,
                 RecordingOptions.DEFAULT_VIDEO_BITRATE);
+        assertEquals(
+                RecordingOptions.ORIENTATION_LANDSCAPE,
+                RecordingOptions.DEFAULT_ORIENTATION);
     }
 }

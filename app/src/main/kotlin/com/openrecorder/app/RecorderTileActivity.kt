@@ -78,23 +78,6 @@ class RecorderTileActivity : ComponentActivity() {
     }
 
     private fun ensureAudioPermissionAndRequestCapture() {
-        val videoCodec = recorderPreferences.loadVideoCodec()
-        if (!ScreenRecorder.isVideoCodecSupported(videoCodec)) {
-            val codecName = getString(
-                if (videoCodec == RecordingOptions.VIDEO_CODEC_H265) {
-                    R.string.video_codec_h265
-                } else {
-                    R.string.video_codec_h264
-                },
-            )
-            showToast(
-                getString(R.string.video_codec_not_supported, codecName),
-                Toast.LENGTH_LONG,
-            )
-            finishWithoutAnimation()
-            return
-        }
-
         val audioSource = recorderPreferences.loadAudioSource()
         if ((audioSource.usesInternalAudio() || audioSource.usesMicrophone()) &&
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
@@ -142,9 +125,10 @@ class RecorderTileActivity : ComponentActivity() {
             recorderPreferences.loadVideoFrameRate(),
             recorderPreferences.loadForce16By9Letterboxing(),
             recorderPreferences.loadVideoBitrate(),
-            recorderPreferences.loadVideoCodec(),
+            RecordingOptions.VIDEO_CODEC_H264,
             recorderPreferences.loadNamingPattern(),
             recorderPreferences.loadOrientation(),
+            recorderPreferences.loadRecordingTimeoutMinutes(),
             SystemClock.elapsedRealtime() + countdownMillis,
         )
 

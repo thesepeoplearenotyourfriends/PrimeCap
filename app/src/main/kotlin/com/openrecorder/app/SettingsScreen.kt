@@ -89,8 +89,8 @@ internal fun SettingsScreen(
     selectedVideoFrameRateIndex: Int,
     force16By9Letterboxing: Boolean,
     selectedVideoBitrateIndex: Int,
-    selectedVideoCodecIndex: Int,
     selectedCountdownIndex: Int,
+    selectedRecordingTimeoutIndex: Int,
     selectedNamingPatternIndex: Int,
     selectedOrientationIndex: Int,
     optionsEnabled: Boolean,
@@ -102,8 +102,8 @@ internal fun SettingsScreen(
     onVideoFrameRateSelected: (Int) -> Unit,
     onForce16By9LetterboxingChanged: (Boolean) -> Unit,
     onVideoBitrateSelected: (Int) -> Unit,
-    onVideoCodecSelected: (Int) -> Unit,
     onCountdownSelected: (Int) -> Unit,
+    onRecordingTimeoutSelected: (Int) -> Unit,
     onNamingPatternSelected: (Int) -> Unit,
     onOrientationSelected: (Int) -> Unit,
     onViewOnGitHub: () -> Unit,
@@ -246,18 +246,22 @@ internal fun SettingsScreen(
             context.getString(R.string.video_bitrate_24),
         )
     }
-    val videoCodecOptions = remember(context) {
-        listOf(
-            context.getString(R.string.video_codec_h264),
-            context.getString(R.string.video_codec_h265),
-        )
-    }
     val countdownOptions = remember(context) {
         listOf(
             context.getString(R.string.countdown_0_seconds),
             context.getString(R.string.countdown_3_seconds),
             context.getString(R.string.countdown_5_seconds),
             context.getString(R.string.countdown_10_seconds),
+        )
+    }
+    val recordingTimeoutOptions = remember(context) {
+        listOf(
+            context.getString(R.string.recording_timeout_off),
+            context.getString(R.string.recording_timeout_1_minute),
+            context.getString(R.string.recording_timeout_5_minutes),
+            context.getString(R.string.recording_timeout_10_minutes),
+            context.getString(R.string.recording_timeout_30_minutes),
+            context.getString(R.string.recording_timeout_60_minutes),
         )
     }
     val namingPatternOptions = remember(context) {
@@ -386,16 +390,6 @@ internal fun SettingsScreen(
                             onSelected = onVideoBitrateSelected,
                         )
                         SelectablePreference(
-                            title = stringResource(R.string.video_codec_label),
-                            items = videoCodecOptions,
-                            selectedIndex = selectedVideoCodecIndex,
-                            enabled = optionsEnabled,
-                            predictiveBackEnabled = enablePredictiveBack,
-                            dismissRequestKey = popupDismissRequestKey,
-                            onExpandedChange = { settingsPopupExpanded = it },
-                            onSelected = onVideoCodecSelected,
-                        )
-                        SelectablePreference(
                             title = stringResource(R.string.recording_countdown_label),
                             items = countdownOptions,
                             selectedIndex = selectedCountdownIndex,
@@ -404,6 +398,16 @@ internal fun SettingsScreen(
                             dismissRequestKey = popupDismissRequestKey,
                             onExpandedChange = { settingsPopupExpanded = it },
                             onSelected = onCountdownSelected,
+                        )
+                        SelectablePreference(
+                            title = stringResource(R.string.recording_timeout_label),
+                            items = recordingTimeoutOptions,
+                            selectedIndex = selectedRecordingTimeoutIndex,
+                            enabled = optionsEnabled,
+                            predictiveBackEnabled = enablePredictiveBack,
+                            dismissRequestKey = popupDismissRequestKey,
+                            onExpandedChange = { settingsPopupExpanded = it },
+                            onSelected = onRecordingTimeoutSelected,
                         )
                         SelectablePreference(
                             title = stringResource(R.string.naming_pattern_label),

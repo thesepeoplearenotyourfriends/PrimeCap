@@ -57,6 +57,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     private static final String EXTRA_VIDEO_CODEC = "video_codec";
     private static final String EXTRA_NAMING_PATTERN = "naming_pattern";
     private static final String EXTRA_ORIENTATION = "recording_orientation";
+    private static final String EXTRA_RECORDING_TIMEOUT_MINUTES = "recording_timeout_minutes";
     private static final String EXTRA_START_AT_ELAPSED_REALTIME =
             "start_at_elapsed_realtime";
 
@@ -72,6 +73,8 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     private Runnable pendingNotificationRestore;
     private Runnable preparationCountdownTick;
     private Toast preparationCountdownToast;
+    private Runnable recordingTimeout;
+    private int recordingTimeoutMinutes;
     private volatile boolean paused;
     private volatile long recordingStartedAtElapsedRealtime;
     private volatile long pausedAtElapsedRealtime;
@@ -91,6 +94,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             int videoCodec,
             String namingPattern,
             int recordingOrientation,
+            int recordingTimeoutMinutes,
             long startAtElapsedRealtime) {
         return new Intent(context, RecordingService.class)
                 .setAction(ACTION_START)
@@ -115,6 +119,9 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                 .putExtra(
                         EXTRA_ORIENTATION,
                         RecordingOptions.normalizeOrientation(recordingOrientation))
+                .putExtra(
+                        EXTRA_RECORDING_TIMEOUT_MINUTES,
+                        RecordingOptions.normalizeRecordingTimeoutMinutes(recordingTimeoutMinutes))
                 .putExtra(EXTRA_START_AT_ELAPSED_REALTIME, startAtElapsedRealtime);
     }
 
@@ -247,6 +254,10 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             int recordingOrientation = RecordingOptions.normalizeOrientation(intent.getIntExtra(
                     EXTRA_ORIENTATION,
                     RecordingOptions.DEFAULT_ORIENTATION));
+            recordingTimeoutMinutes = RecordingOptions.normalizeRecordingTimeoutMinutes(
+                    intent.getIntExtra(
+                            EXTRA_RECORDING_TIMEOUT_MINUTES,
+                            RecordingOptions.DEFAULT_RECORDING_TIMEOUT_MINUTES));
             ScreenRecorder pendingRecorder = new ScreenRecorder(
                     this,
                     resultCode,
@@ -331,6 +342,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             totalPausedDurationMs = 0L;
             paused = false;
             if (!stopping.get() && !finished.get()) {
+                scheduleRecordingTimeout();
                 setRecordingState(RecordingState.RECORDING);
                 notificationManager.notify(
                         NOTIFICATION_ID,
@@ -568,6 +580,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             }
             pausedAtElapsedRealtime = SystemClock.elapsedRealtime();
             paused = true;
+            cancelRecordingTimeout();
             setRecordingState(RecordingState.PAUSED);
             notificationManager.notify(
                     NOTIFICATION_ID,
@@ -596,6 +609,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             totalPausedDurationMs += Math.max(0L, resumedAt - pausedAtElapsedRealtime);
             pausedAtElapsedRealtime = 0L;
             paused = false;
+            scheduleRecordingTimeout();
             setRecordingState(RecordingState.RECORDING);
             notificationManager.notify(
                     NOTIFICATION_ID,
@@ -616,6 +630,24 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
         }
         long end = paused ? pausedAtElapsedRealtime : SystemClock.elapsedRealtime();
         return Math.max(0L, end - startedAt - totalPausedDurationMs);
+    }
+
+    private void scheduleRecordingTimeout() {
+        cancelRecordingTimeout();
+        if (recordingTimeoutMinutes == RecordingOptions.RECORDING_TIMEOUT_OFF) {
+            return;
+        }
+        long timeoutDurationMs = recordingTimeoutMinutes * DateUtils.MINUTE_IN_MILLIS;
+        long remainingMs = timeoutDurationMs - getActiveRecordingDurationMs();
+        recordingTimeout = this::stopAndSave;
+        mainHandler.postDelayed(recordingTimeout, Math.max(0L, remainingMs));
+    }
+
+    private void cancelRecordingTimeout() {
+        if (recordingTimeout != null) {
+            mainHandler.removeCallbacks(recordingTimeout);
+            recordingTimeout = null;
+        }
     }
 
     private void deleteSavedRecording(Intent intent, int startId) {
@@ -644,7 +676,10 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
         if (finished.get() || !stopping.compareAndSet(false, true)) {
             return;
         }
-        runOnMainThread(this::cancelPreparationCountdown);
+        runOnMainThread(() -> {
+            cancelPreparationCountdown();
+            cancelRecordingTimeout();
+        });
 
         Runnable scheduledStart = pendingStart;
         if (scheduledStart != null) {
@@ -742,6 +777,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
         }
         mainHandler.post(() -> {
             cancelPreparationCountdown();
+            cancelRecordingTimeout();
             cancelPendingNotificationRestore();
             stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
@@ -795,29 +831,17 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                 this,
                 R.string.preparing_recording,
                 Toast.LENGTH_SHORT);
-        preparationCountdownTick = new Runnable() {
-            @Override
-            public void run() {
-                if (preparationCountdownTick != this || stopping.get() || finished.get()) {
-                    cancelPreparationCountdown();
-                    return;
-                }
-                preparationCountdownToast.show();
-                mainHandler.postDelayed(this, 1_000L);
-            }
-        };
-        preparationCountdownTick.run();
+        preparationCountdownToast.show();
     }
 
     private void startPreparationCountdown(int durationSeconds) {
-        Runnable indicator = preparationCountdownTick;
-        if (indicator != null) {
-            mainHandler.removeCallbacks(indicator);
-        }
-        if (preparationCountdownToast == null) {
-            preparationCountdownToast = Toast.makeText(this, "", Toast.LENGTH_SHORT);
-        }
-        final int[] seconds = {durationSeconds};
+        cancelPreparationCountdown();
+        final int firstDelaySeconds = Math.max(0, durationSeconds - 3);
+        preparationCountdownToast = Toast.makeText(
+                this,
+                R.string.preparing_recording_countdown_5_4,
+                Toast.LENGTH_SHORT);
+        preparationCountdownToast.show();
         preparationCountdownTick = new Runnable() {
             @Override
             public void run() {
@@ -825,22 +849,24 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                     cancelPreparationCountdown();
                     return;
                 }
-                if (seconds[0] <= 1) {
+                preparationCountdownToast = Toast.makeText(
+                        RecordingService.this,
+                        R.string.preparing_recording_countdown_3_2,
+                        Toast.LENGTH_SHORT);
+                preparationCountdownToast.show();
+                mainHandler.postDelayed(() -> {
+                    if (preparationCountdownTick != this) {
+                        return;
+                    }
                     cancelPreparationCountdown();
                     ScreenRecorder preparingRecorder = recorder;
                     if (preparingRecorder != null) {
                         preparingRecorder.onPreparationOverlayCleared();
                     }
-                    return;
-                }
-                preparationCountdownToast.setText(
-                        getString(R.string.preparing_recording_countdown, seconds[0]));
-                preparationCountdownToast.show();
-                seconds[0]--;
-                mainHandler.postDelayed(this, 1_000L);
+                }, 2_000L);
             }
         };
-        preparationCountdownTick.run();
+        mainHandler.postDelayed(preparationCountdownTick, firstDelaySeconds * 1_000L);
     }
 
     private void cancelPreparationCountdown() {
@@ -863,6 +889,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     @Override
     public void onDestroy() {
         cancelPreparationCountdown();
+        cancelRecordingTimeout();
         cancelPendingNotificationRestore();
         Runnable scheduledStart = pendingStart;
         if (scheduledStart != null) {
