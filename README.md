@@ -1,3 +1,50 @@
+<p align="center">
+  <img src="primecap-logo.svg" width="180" alt="PrimeCap logo: a decorated letter P with a recording lens and video frames">
+</p>
+
+# PrimeCap
+
+PrimeCap is a rooted Android screen recorder built from Open Recorder. It keeps
+the original app's Compose interface, audio capture, recording controls, and MP4
+muxing, while replacing the video source with a privileged capture path derived
+from [scrcpy](https://github.com/Genymobile/scrcpy). The result is an on-device
+recorder: scrcpy contributes its proven display-capture and MediaCodec pipeline,
+but no desktop client or network connection is involved.
+
+## How the integration works
+
+1. The build extracts the vendored, unmodified scrcpy 3.3.4 archive, applies the
+   small patch in `app/scrcpy/primecap-daemon.patch`, and adds the sources under
+   `app/scrcpy/overlay`. This produces the packaged `primecap-video-daemon` and
+   `primecap-relay` assets; the patch and overlay keep the divergence from
+   upstream visible and reviewable.
+2. When recording starts, PrimeCap uses root to stage a tiny native launcher.
+   The launcher deliberately changes supplementary groups, GID, UID, and SELinux
+   context before starting the daemon with the identity of Android's real
+   `adb shell`. That shell context is what lets scrcpy's display capture run on
+   the device outside the app process.
+3. The daemon adapts scrcpy's `ScreenCapture` and `SurfaceEncoder` into a
+   single-session service on an abstract local socket. The disposable,
+   root-launched relay connects the app to that socket over its own standard
+   input/output, so the APK does not expose a network service.
+4. PrimeCap sends capture size, bitrate, codec, and frame-rate options, then
+   receives a compact framed stream of format metadata, encoded H.264/H.265
+   samples, end markers, and errors. MediaCodec timestamps and flags are retained.
+5. The Android app owns everything after capture: it aligns the video with
+   MediaProjection-backed internal audio and/or microphone audio, implements
+   pause/resume and readiness synchronization, muxes the tracks into MP4, and
+   publishes the finished recording through MediaStore. The app also owns daemon
+   lifecycle and stops only the exact PID acknowledged by its protocol.
+
+The more detailed daemon build and protocol notes live in
+[`app/scrcpy/README.md`](app/scrcpy/README.md).
+
+---
+
+## Legacy Open Recorder documentation
+
+The original project documentation and credits are preserved below.
+
 # Open Recorder
 
 An open-source screen recorder for Android with internal audio and a modern interface. No ads, no trackers and no internet access.
