@@ -9,7 +9,10 @@ the original app's Compose interface, audio capture, recording controls, and MP4
 muxing, while replacing the video source with a privileged capture path derived
 from [scrcpy](https://github.com/Genymobile/scrcpy). The result is an on-device
 recorder: scrcpy contributes its proven display-capture and MediaCodec pipeline,
-but no desktop client or network connection is involved.
+but no desktop client or network connection is involved. 
+
+The outcome is in Android 10, FLAG_SECURE enforcement wasn’t equally airtight across every capture path / compositor route. scrcpy historically used lower-level screen-capture mechanisms rather than the normal MediaProjection API, and on some older Android versions/device builds it could still capture things that the ordinary screenshot/recording path blanked. Later Android releases tightened enforcement deeper in SurfaceFlinger/display composition, so there were fewer holes.
+
 
 ## How the integration works
 
