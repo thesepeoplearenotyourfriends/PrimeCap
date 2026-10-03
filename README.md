@@ -11,7 +11,7 @@ from [scrcpy](https://github.com/Genymobile/scrcpy). The result is an on-device
 recorder: scrcpy contributes its proven display-capture and MediaCodec pipeline,
 but no desktop client or network connection is involved. 
 
-The outcome is in Android 10, FLAG_SECURE enforcement wasn’t equally airtight across every capture path / compositor route. scrcpy historically used lower-level screen-capture mechanisms rather than the normal MediaProjection API, and on some older Android versions/device builds it could still capture things that the ordinary screenshot/recording path blanked. Later Android releases tightened enforcement deeper in SurfaceFlinger/display composition, so there were fewer holes.
+The outcome is in < Android 12, FLAG_SECURE enforcement wasn’t equally airtight across every capture path / compositor route. scrcpy historically used lower-level screen-capture mechanisms rather than the normal MediaProjection API, and on some older Android versions/device builds it could still capture things that the ordinary screenshot/recording path blanked. Later Android releases tightened enforcement deeper in SurfaceFlinger/display composition, so there were fewer holes. The scrcpy maintainer states that secure-flag apps “may only be mirrored with Android < 12,” and specifically says that since Android 12, the system refuses to capture them even with scrcpy’s privileges.
 
 
 ## How the integration works
