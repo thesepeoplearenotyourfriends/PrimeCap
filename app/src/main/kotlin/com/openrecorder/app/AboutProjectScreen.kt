@@ -86,6 +86,10 @@ internal fun AboutProjectScreen(
             ),
         ) {
             item {
+                PrimeCapForkNotice()
+            }
+
+            item {
                 AboutProjectHeader()
             }
 
@@ -115,6 +119,22 @@ internal fun AboutProjectScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PrimeCapForkNotice() {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.about_fork_blurb),
+            modifier = Modifier.padding(20.dp),
+            style = MiuixTheme.textStyles.body2,
+            color = MiuixTheme.colorScheme.onSurface,
+        )
     }
 }
 

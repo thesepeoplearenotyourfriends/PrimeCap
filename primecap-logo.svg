@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">PrimeCap</title>
+  <desc id="description">A decorated letter P shaped like a strip of video film, with a recording lens.</desc>
+  <defs>
+    <linearGradient id="backdrop" x1="72" y1="48" x2="440" y2="464" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7657FF"/>
+      <stop offset="0.52" stop-color="#3E46D8"/>
+      <stop offset="1" stop-color="#141A49"/>
+    </linearGradient>
+    <linearGradient id="film" x1="160" y1="112" x2="356" y2="404" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#C9D1FF"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#090D2B" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#backdrop)"/>
+  <path d="M90 145 58 128v72l32-17zM422 329l32-17v72l-32-18z" fill="#AFA8FF" opacity="0.8"/>
+  <circle cx="409" cy="104" r="18" fill="#FF4D78"/>
+  <circle cx="409" cy="104" r="30" fill="none" stroke="#FF8AA5" stroke-width="5" opacity="0.45"/>
+
+  <g filter="url(#shadow)">
+    <path d="M145 112h128c81 0 132 42 132 111 0 72-51 116-132 116h-45v65h-83V112zm83 70v87h43c33 0 51-15 51-44 0-28-18-43-51-43h-43z" fill="url(#film)"/>
+    <path d="M145 112h83v292h-83z" fill="#FFFFFF" opacity="0.3"/>
+  </g>
+
+  <g fill="#343EB9">
+    <rect x="158" y="132" width="20" height="28" rx="5"/>
+    <rect x="158" y="178" width="20" height="28" rx="5"/>
+    <rect x="158" y="224" width="20" height="28" rx="5"/>
+    <rect x="158" y="270" width="20" height="28" rx="5"/>
+    <rect x="158" y="316" width="20" height="28" rx="5"/>
+    <rect x="158" y="362" width="20" height="28" rx="5"/>
+  </g>
+  <circle cx="271" cy="225" r="28" fill="#FF4D78"/>
+  <circle cx="271" cy="225" r="13" fill="#FFB2C4" opacity="0.75"/>
+  <path d="M355 376h55l38-27v81l-38-27h-55z" fill="#8DE8FF"/>
+</svg>
