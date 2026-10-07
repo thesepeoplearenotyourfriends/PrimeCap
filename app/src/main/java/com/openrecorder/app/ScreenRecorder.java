@@ -44,6 +44,7 @@ final class ScreenRecorder {
     private final Intent resultData;
     private final AudioSource audioSource;
     private final int audioSampleRate;
+    private final boolean useRootAudioCapture;
     private final int videoResolution;
     private final int videoFrameRate;
     private final int videoBitrate;
@@ -74,6 +75,7 @@ final class ScreenRecorder {
             Intent resultData,
             AudioSource audioSource,
             int audioSampleRate,
+            boolean useRootAudioCapture,
             int videoResolution,
             int videoFrameRate,
             int videoBitrate,
@@ -84,6 +86,7 @@ final class ScreenRecorder {
         this.resultCode = resultCode;
         this.resultData = resultData;
         this.audioSource = audioSource;
+        this.useRootAudioCapture = useRootAudioCapture;
         this.audioSampleRate = RecordingOptions.normalizeSampleRate(audioSampleRate);
         this.videoResolution = RecordingOptions.normalizeVideoResolution(videoResolution);
         this.videoFrameRate = RecordingOptions.normalizeVideoFrameRate(videoFrameRate);
@@ -140,7 +143,8 @@ final class ScreenRecorder {
                         context,
                         projection,
                         audioSource,
-                        audioSampleRate);
+                        audioSampleRate,
+                        useRootAudioCapture);
                 audioRecorder.prepare();
             } catch (Exception error) {
                 disableAudio(error);

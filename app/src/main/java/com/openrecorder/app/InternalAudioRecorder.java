@@ -35,7 +35,9 @@ final class InternalAudioRecorder {
     private final MediaProjection projection;
     private final boolean capturePlayback;
     private final boolean includeMicrophone;
-    private final int sampleRate;
+    private int sampleRate;
+    private final boolean useRootAudio;
+    private RootAudioSource rootPlayback;
     private final AtomicReference<Exception> failure = new AtomicReference<>();
     private final AtomicBoolean codecResourcesFinished = new AtomicBoolean();
     private final MediaCodec.BufferInfo codecBufferInfo = new MediaCodec.BufferInfo();
@@ -65,11 +67,13 @@ final class InternalAudioRecorder {
             Context context,
             MediaProjection projection,
             AudioSource audioSource,
-            int sampleRate) {
+            int sampleRate,
+            boolean useRootAudio) {
         this.context = context.getApplicationContext();
         this.projection = projection;
         this.capturePlayback = audioSource.usesInternalAudio();
         this.includeMicrophone = audioSource.usesMicrophone();
+        this.useRootAudio = useRootAudio && capturePlayback;
         if (!capturePlayback && !includeMicrophone) {
             throw new IllegalArgumentException("An audio capture source is required");
         }
@@ -123,6 +127,7 @@ final class InternalAudioRecorder {
                 microphoneRecord.startRecording();
             }
             ensureRecordersStarted();
+            if (rootPlayback != null) rootPlayback.start();
 
             running = true;
             paused = false;
@@ -142,9 +147,14 @@ final class InternalAudioRecorder {
     }
 
     private void setup() throws IOException {
-        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+        if ((includeMicrophone || (capturePlayback && !useRootAudio))
+                && context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
             throw new SecurityException("RECORD_AUDIO permission is required");
+        }
+        if (useRootAudio) {
+            rootPlayback = new RootAudioSource(context, sampleRate);
+            sampleRate = rootPlayback.sampleRate();
         }
         int minimumBuffer = AudioRecord.getMinBufferSize(
                 sampleRate,
@@ -160,7 +170,7 @@ final class InternalAudioRecorder {
                 .setSampleRate(sampleRate)
                 .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
                 .build();
-        if (capturePlayback) {
+        if (capturePlayback && !useRootAudio) {
             AudioPlaybackCaptureConfiguration captureConfiguration =
                     new AudioPlaybackCaptureConfiguration.Builder(projection)
                             .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
@@ -219,7 +229,9 @@ final class InternalAudioRecorder {
         String primaryName = capturePlayback ? "Internal audio" : "Microphone";
         try {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
-            if (capturePlayback && includeMicrophone) {
+            if (rootPlayback != null) {
+                captureRootAudio();
+            } else if (capturePlayback && includeMicrophone) {
                 captureMixedAudio(primaryRecord, primaryName);
             } else {
                 captureDirectAudio(primaryRecord, primaryName);
@@ -239,6 +251,10 @@ final class InternalAudioRecorder {
             }
         } finally {
             running = false;
+            if (rootPlayback != null) {
+                rootPlayback.close();
+                safeStop(microphoneRecord);
+            }
             finishCodecAndOutput();
         }
     }
@@ -338,6 +354,31 @@ final class InternalAudioRecorder {
             int sampleCount = Math.min(primaryCount, microphoneCount);
             mix(primary, microphone, sampleCount);
             queueShortPcm(primary, sampleCount, bufferStartNanos);
+            drainCodec(false);
+        }
+    }
+
+    /** Root PCM is drained through pauses; source timestamps select timeline ranges. */
+    private void captureRootAudio() throws IOException, InterruptedException {
+        short[] microphone = new short[1024];
+        while (running) {
+            RootAudioProtocol.Block block = rootPlayback.read();
+            if (!running) break;
+            if (includeMicrophone) {
+                int offset = 0;
+                while (running && offset < block.mono.length) {
+                    int count = microphoneRecord.read(microphone, offset,
+                            block.mono.length - offset, AudioRecord.READ_BLOCKING);
+                    if (count <= 0) {
+                        if (!running) return;
+                        throw new IOException("Microphone read failed: " + count);
+                    }
+                    offset += count;
+                }
+                if (!running) break;
+                mix(block.mono, microphone, block.mono.length);
+            }
+            queueShortPcm(block.mono, block.mono.length, block.sourceStartNanos);
             drainCodec(false);
         }
     }
@@ -665,8 +706,10 @@ final class InternalAudioRecorder {
             }
             paused = true;
         }
-        safeStop(playbackRecord);
-        safeStop(microphoneRecord);
+        if (!useRootAudio) {
+            safeStop(playbackRecord);
+            safeStop(microphoneRecord);
+        }
     }
 
     synchronized void resume() throws IOException {
@@ -681,7 +724,7 @@ final class InternalAudioRecorder {
                 if (playbackRecord != null) {
                     playbackRecord.startRecording();
                 }
-                if (microphoneRecord != null) {
+                if (microphoneRecord != null && !useRootAudio) {
                     microphoneRecord.startRecording();
                 }
                 ensureRecordersStarted();
@@ -699,6 +742,7 @@ final class InternalAudioRecorder {
             return;
         }
         running = false;
+        if (rootPlayback != null) rootPlayback.close();
         wakePausedWorker();
         safeStop(playbackRecord);
         safeStop(microphoneRecord);
@@ -724,6 +768,7 @@ final class InternalAudioRecorder {
     synchronized void release() {
         boolean waitForCaptureWorker = worker != null && worker.isAlive();
         running = false;
+        if (rootPlayback != null) rootPlayback.close();
         wakePausedWorker();
         safeStop(playbackRecord);
         safeStop(microphoneRecord);
@@ -763,6 +808,7 @@ final class InternalAudioRecorder {
 
     private void cleanUpFailedStart() {
         running = false;
+        if (rootPlayback != null) rootPlayback.close();
         wakePausedWorker();
         safeStop(playbackRecord);
         safeStop(microphoneRecord);

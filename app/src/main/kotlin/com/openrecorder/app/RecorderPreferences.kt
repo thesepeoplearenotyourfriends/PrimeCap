@@ -58,6 +58,12 @@ internal class RecorderPreferences(context: Context) {
         preferences.edit().putInt(KEY_AUDIO_SOURCE, value.ordinal).apply()
     }
 
+    fun loadUseRootAudioCapture(): Boolean = preferences.getBoolean(KEY_ROOT_AUDIO, false)
+
+    fun saveUseRootAudioCapture(value: Boolean) {
+        preferences.edit().putBoolean(KEY_ROOT_AUDIO, value).apply()
+    }
+
     fun loadSampleRate(): Int = RecordingOptions.normalizeSampleRate(
         preferences.getInt(KEY_SAMPLE_RATE, RecordingOptions.DEFAULT_SAMPLE_RATE),
     )
@@ -140,6 +146,7 @@ internal class RecorderPreferences(context: Context) {
         const val KEY_ENABLE_PREDICTIVE_BACK = "enable_predictive_back"
         const val KEY_DISABLE_PREDICTIVE_BACK_LEGACY = "disable_predictive_back"
         const val KEY_AUDIO_SOURCE = "audio_source"
+        const val KEY_ROOT_AUDIO = "use_root_audio_capture"
         const val KEY_SAMPLE_RATE = "sample_rate"
         const val KEY_VIDEO_BITRATE = "video_bitrate"
         const val KEY_VIDEO_RESOLUTION = "video_resolution"

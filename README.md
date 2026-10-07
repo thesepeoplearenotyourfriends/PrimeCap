@@ -34,7 +34,7 @@ The outcome is in < Android 12, FLAG_SECURE enforcement wasn’t equally airtigh
    receives a compact framed stream of format metadata, encoded H.264/H.265
    samples, end markers, and errors. MediaCodec timestamps and flags are retained.
 5. The Android app owns everything after capture: it aligns the video with
-   MediaProjection-backed internal audio and/or microphone audio, implements
+   MediaProjection-backed (or optional root writeback) internal audio and/or microphone audio, implements
    pause/resume and readiness synchronization, muxes the tracks into MP4, and
    publishes the finished recording through MediaStore. The app also owns daemon
    lifecycle and stops only the exact PID acknowledged by its protocol.
@@ -107,7 +107,7 @@ An open-source screen recorder for Android with internal audio and a modern inte
 
 | Permission | Why |
 |---|---|
-| `RECORD_AUDIO` | Microphone and internal audio capture |
+| `RECORD_AUDIO` | Microphone and ordinary internal audio capture; not root playback alone |
 | `POST_NOTIFICATIONS` | Recording controls and "saved" notification |
 | `FOREGROUND_SERVICE` | Keeps recording while the app is in the background |
 | `FOREGROUND_SERVICE_MEDIA_PROJECTION` | Required by Android for screen capture services |
@@ -123,7 +123,8 @@ These come from Android itself, not from this app:
 
 - Android asks for your confirmation every time you start a recording.
 - Apps that block capture (DRM video, banking apps, anything using `FLAG_SECURE`) can appear black or silent.
-- Internal audio only includes apps that allow playback capture.
+- Ordinary internal audio only includes apps that allow playback capture.
+- Optional **Use root audio capture** uses the named MediaTek `DL1_AWB_Record` playback writeback endpoint. It requires a supported kernel and root access; no Android playback-capture fallback is used. See [backend design, validation, and limitations](docs/root-audio.md).
 
 ## Credits
 

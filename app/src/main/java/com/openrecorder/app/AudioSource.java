@@ -14,6 +14,10 @@ enum AudioSource {
         return this == MICROPHONE || this == INTERNAL_AND_MICROPHONE;
     }
 
+    boolean requiresRecordAudioPermission(boolean useRootAudioCapture) {
+        return usesMicrophone() || (usesInternalAudio() && !useRootAudioCapture);
+    }
+
     static AudioSource fromOrdinal(int ordinal) {
         AudioSource[] values = values();
         return ordinal >= 0 && ordinal < values.length ? values[ordinal] : NONE;

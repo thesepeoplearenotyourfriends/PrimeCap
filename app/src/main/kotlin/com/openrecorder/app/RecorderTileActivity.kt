@@ -79,7 +79,7 @@ class RecorderTileActivity : ComponentActivity() {
 
     private fun ensureAudioPermissionAndRequestCapture() {
         val audioSource = recorderPreferences.loadAudioSource()
-        if ((audioSource.usesInternalAudio() || audioSource.usesMicrophone()) &&
+        if (audioSource.requiresRecordAudioPermission(recorderPreferences.loadUseRootAudioCapture()) &&
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -121,6 +121,7 @@ class RecorderTileActivity : ComponentActivity() {
             projectionData,
             recorderPreferences.loadAudioSource(),
             recorderPreferences.loadSampleRate(),
+            recorderPreferences.loadUseRootAudioCapture(),
             recorderPreferences.loadVideoResolution(),
             recorderPreferences.loadVideoFrameRate(),
             recorderPreferences.loadVideoBitrate(),
