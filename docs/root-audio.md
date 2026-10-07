@@ -12,9 +12,12 @@ it. Video still uses the existing MediaProjection authorization flow.
 The bundled `primecap-root-audio` arm64 executable uses the public ALSA kernel
 ioctl ABI directly (`sound/asound.h`). It links only against public Android system libraries (libc/libm/libdl), with no
 TinyALSA, vendor-library, device executable, or AudioRecord playback dependency.
-It parses `/proc/asound/pcm` for the exact capture name `DL1_AWB_Record`, then
+It parses `/proc/asound/pcm` for the exact first PCM ID token `DL1_AWB_Record`, then
 constructs the capture-node path from that entry's card and device. Unrelated
-capture nodes are never opened. Missing or ambiguous named endpoints fail clearly.
+capture nodes are never opened. MediaTek may append a DAI description after the
+ID in the first field (the Armor line is `00-09: DL1_AWB_Record
+mt-soc-codec-dl1awb-dai-9 :  : capture 1`); conventional Linux prints the PCM name
+in a separate field. Descriptive fields are not used to identify the backend. Missing or ambiguous named endpoints fail clearly.
 The name registry in `root_audio_backend.h` is the extension point for future
 named writeback backends; adding a name requires confirming its format and timing.
 
@@ -102,8 +105,9 @@ Run native discovery/timing/control tests on a Linux host with a C compiler:
 app/src/test/cpp/run.sh
 ```
 
-Fixtures include the Armor layout (card 0/device 9) and a shifted layout
-(card 2/device 17), plus exact-name/capture-only rejection cases. The host test
+Fixtures include the actual Armor line (card 0/device 9), a shifted MediaTek layout
+(card 2/device 17), and conventional Linux ID/name fields (card 3/device 12), plus
+ID-prefix, description-only matches, and capture-only rejection cases. The host test
 checks timestamp/availability math and exits simulated blocked readers on both
 control-byte and EOF shutdown. JVM tests check format/version validation, stereo
 downmix overflow, source timestamp preservation, explicit fallback quality, and

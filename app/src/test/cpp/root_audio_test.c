@@ -40,12 +40,21 @@ static void stop_blocked_reader(int eof) {
 int main(void) {
     fixture("app/src/test/cpp/fixtures/armor-pcm.txt", 0, 9);
     fixture("app/src/test/cpp/fixtures/shifted-pcm.txt", 2, 17);
+    fixture("app/src/test/cpp/fixtures/linux-pcm.txt", 3, 12);
     unsigned c, d;
     assert(!parse_writeback("00-09: DL1_AWB_Record : playback 1", &c, &d));
     assert(!parse_writeback("00-09: DL1_AWB_Record : capture 0", &c, &d));
     assert(!parse_writeback("00-09: DL1_AWB_Record_extra : capture 1", &c, &d));
     assert(!parse_writeback("00-09: UL1_Record : capture 1", &c, &d));
     assert(!parse_writeback("invalid", &c, &d));
+    assert(!parse_writeback("00-09: DL1_AWB_Record_extra mt-soc-codec : : capture 1", &c, &d));
+    assert(!parse_writeback("00-09: Other_ID DL1_AWB_Record : : capture 1", &c, &d));
+    assert(!parse_writeback("00-09: Other_ID : DL1_AWB_Record : capture 1", &c, &d));
+    assert(!parse_writeback("00-09: : DL1_AWB_Record : capture 1", &c, &d));
+    assert(parse_writeback("04-21: \tDL1_AWB_Record\tcodec-name : : capture 1", &c, &d));
+    assert(c == 4 && d == 21);
+    assert(parse_writeback("04-22: DL1_AWB_Record: PCM name : capture 1", &c, &d));
+    assert(c == 4 && d == 22);
     assert(!parse_writeback("00-09: DL1_AWB_Record : nocapture 1", &c, &d));
     assert(!parse_writeback("00-09: DL1_AWB_Record : capture 1garbage", &c, &d));
     assert(source_start_ns(1000000000LL, 480, 480, 48000) == 980000000LL);
