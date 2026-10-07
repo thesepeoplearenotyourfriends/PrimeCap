@@ -64,6 +64,15 @@ public final class RecorderTileService extends TileService {
             }
             return;
         }
+        if (state == RecordingState.READY) {
+            try {
+                startService(RecordingService.createBeginIntent(this));
+            } catch (RuntimeException error) {
+                Log.e(TAG, "Unable to start primed recorder", error);
+                Toast.makeText(this, R.string.recording_failed, Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
         if (state == RecordingState.SAVING) {
             updateTile(state);
             return;
@@ -135,9 +144,17 @@ public final class RecorderTileService extends TileService {
         int tileState;
         int descriptionRes;
         switch (recordingState) {
-            case RecordingState.PREPARING:
+            case RecordingState.PRIMING:
                 tileState = Tile.STATE_ACTIVE;
                 descriptionRes = R.string.quick_settings_preparing;
+                break;
+            case RecordingState.READY:
+                tileState = Tile.STATE_ACTIVE;
+                descriptionRes = R.string.start_recording;
+                break;
+            case RecordingState.COUNTDOWN:
+                tileState = Tile.STATE_ACTIVE;
+                descriptionRes = R.string.status_starting;
                 break;
             case RecordingState.RECORDING:
                 tileState = Tile.STATE_ACTIVE;
@@ -154,7 +171,7 @@ public final class RecorderTileService extends TileService {
             case RecordingState.IDLE:
             default:
                 tileState = Tile.STATE_INACTIVE;
-                descriptionRes = 0;
+                descriptionRes = R.string.prime_recorder;
                 break;
         }
 

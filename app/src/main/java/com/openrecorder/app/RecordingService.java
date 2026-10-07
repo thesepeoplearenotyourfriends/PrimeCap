@@ -29,9 +29,9 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     private static final String CHANNEL_ID = "screen_recording";
     private static final int NOTIFICATION_ID = 4273;
     private static final int SAVED_NOTIFICATION_ID = 4274;
-    private static final long MAX_PREPARATION_DELAY_MS = 10_000L;
     private static final long RECORDING_NOTIFICATION_RESTORE_DELAY_MS = 1_000L;
 
+    private static final String ACTION_BEGIN = "com.openrecorder.app.action.BEGIN";
     private static final String ACTION_START =
             "com.openrecorder.app.action.START";
     private static final String ACTION_STOP =
@@ -55,8 +55,9 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     private static final String EXTRA_VIDEO_CODEC = "video_codec";
     private static final String EXTRA_NAMING_PATTERN = "naming_pattern";
     private static final String EXTRA_RECORDING_TIMEOUT_MINUTES = "recording_timeout_minutes";
-    private static final String EXTRA_START_AT_ELAPSED_REALTIME =
-            "start_at_elapsed_realtime";
+    private static final String EXTRA_COUNTDOWN_SECONDS = "countdown_seconds";
+    private static volatile RecordingCountdown countdown;
+    private int countdownSeconds;
 
     private final AtomicBoolean stopping = new AtomicBoolean();
     private final AtomicBoolean finished = new AtomicBoolean();
@@ -66,7 +67,6 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     private ExecutorService executor;
     private NotificationManager notificationManager;
     private volatile ScreenRecorder recorder;
-    private volatile Runnable pendingStart;
     private Runnable pendingNotificationRestore;
     private Runnable preparationCountdownTick;
     private Toast preparationCountdownToast;
@@ -93,7 +93,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             int videoCodec,
             String namingPattern,
             int recordingTimeoutMinutes,
-            long startAtElapsedRealtime) {
+            int countdownSeconds) {
         return new Intent(context, RecordingService.class)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
@@ -117,7 +117,17 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                 .putExtra(
                         EXTRA_RECORDING_TIMEOUT_MINUTES,
                         RecordingOptions.normalizeRecordingTimeoutMinutes(recordingTimeoutMinutes))
-                .putExtra(EXTRA_START_AT_ELAPSED_REALTIME, startAtElapsedRealtime);
+                .putExtra(EXTRA_COUNTDOWN_SECONDS,
+                        RecordingOptions.normalizeCountdownSeconds(countdownSeconds));
+    }
+
+    static Intent createBeginIntent(Context context) {
+        return new Intent(context, RecordingService.class).setAction(ACTION_BEGIN);
+    }
+
+    static long getCountdownDeadline() {
+        RecordingCountdown current = countdown;
+        return current == null ? 0L : current.deadlineMillis;
     }
 
     static Intent createStopIntent(Context context) {
@@ -180,6 +190,9 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             case ACTION_START:
                 startFromIntent(intent);
                 break;
+            case ACTION_BEGIN:
+                beginRecording();
+                break;
             case ACTION_STOP:
                 stopAndSave();
                 break;
@@ -212,7 +225,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                 intent.getIntExtra(EXTRA_AUDIO_SOURCE, AudioSource.NONE.ordinal()));
         try {
             startForegroundCompat(createRecordingNotification(true));
-            setRecordingState(RecordingState.PREPARING);
+            setRecordingState(RecordingState.PRIMING);
             startPreparationIndicator();
 
             int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
@@ -262,16 +275,15 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                     this);
             recorder = pendingRecorder;
 
-            long requestedStart = intent.getLongExtra(
-                    EXTRA_START_AT_ELAPSED_REALTIME,
-                    SystemClock.elapsedRealtime());
-            executor.execute(() -> prepareRecorder(pendingRecorder, requestedStart));
+            countdownSeconds = RecordingOptions.normalizeCountdownSeconds(
+                    intent.getIntExtra(EXTRA_COUNTDOWN_SECONDS, 0));
+            executor.execute(() -> prepareRecorder(pendingRecorder));
         } catch (Exception error) {
             failRecording(error, recorder);
         }
     }
 
-    private void prepareRecorder(ScreenRecorder pendingRecorder, long requestedStart) {
+    private void prepareRecorder(ScreenRecorder pendingRecorder) {
         if (finished.get() || stopping.get()) {
             pendingRecorder.release();
             finishService();
@@ -279,31 +291,19 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
         }
 
         try {
-            pendingRecorder.prepare();
+            pendingRecorder.prime();
             if (finished.get() || stopping.get() || recorder != pendingRecorder) {
                 pendingRecorder.release();
                 finishService();
                 return;
             }
 
-            long now = SystemClock.elapsedRealtime();
-            long delay = Math.max(0L, Math.min(requestedStart - now,
-                    MAX_PREPARATION_DELAY_MS));
-            Runnable scheduledStart = new Runnable() {
-                @Override
-                public void run() {
-                    if (pendingStart != this) {
-                        return;
-                    }
-                    pendingStart = null;
-                    if (finished.get() || stopping.get() || recorder != pendingRecorder) {
-                        return;
-                    }
-                    executor.execute(() -> startRecorder(pendingRecorder));
-                }
-            };
-            pendingStart = scheduledStart;
-            mainHandler.postDelayed(scheduledStart, delay);
+            runOnMainThread(() -> {
+                if (finished.get() || stopping.get() || recorder != pendingRecorder) return;
+                cancelPreparationCountdown();
+                setRecordingState(RecordingState.READY);
+                notificationManager.notify(NOTIFICATION_ID, createRecordingNotification(true));
+            });
         } catch (Exception error) {
             if (stopping.get()) {
                 pendingRecorder.release();
@@ -325,7 +325,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             pendingRecorder.start();
             runOnMainThread(this::cancelPreparationCountdown);
             recorderStarted.set(true);
-            recordingStartedAtElapsedRealtime = SystemClock.elapsedRealtime();
+            recordingStartedAtElapsedRealtime = pendingRecorder.getRecordingStartedAtElapsedRealtime();
             pausedAtElapsedRealtime = 0L;
             totalPausedDurationMs = 0L;
             paused = false;
@@ -362,7 +362,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Notification.Action stopAction = new Notification.Action.Builder(
                 android.R.drawable.ic_menu_close_clear_cancel,
-                getString(R.string.action_stop),
+                getString(preparing ? R.string.cancel_recording : R.string.action_stop),
                 stopIntent).build();
         PendingIntent openApp = PendingIntent.getActivity(
                 this,
@@ -384,8 +384,18 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
         }
 
         if (preparing) {
-            builder.setContentText(getString(R.string.notification_preparing))
+            int state = RecordingState.get();
+            builder.setContentText(getString(state == RecordingState.READY
+                            ? R.string.status_ready
+                            : state == RecordingState.COUNTDOWN
+                            ? R.string.status_starting : R.string.notification_preparing))
                     .setShowWhen(false);
+            if (state == RecordingState.READY) {
+                PendingIntent begin = PendingIntent.getService(this, 5, createBeginIntent(this),
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                builder.addAction(new Notification.Action.Builder(android.R.drawable.ic_media_play,
+                        getString(R.string.start_recording), begin).build());
+            }
         } else {
             PendingIntent notificationDismissedIntent = PendingIntent.getService(
                     this,
@@ -612,21 +622,16 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     }
 
     private long getActiveRecordingDurationMs() {
-        long startedAt = recordingStartedAtElapsedRealtime;
-        if (startedAt <= 0L) {
-            return 0L;
-        }
         long end = paused ? pausedAtElapsedRealtime : SystemClock.elapsedRealtime();
-        return Math.max(0L, end - startedAt - totalPausedDurationMs);
+        return RecordingTimeout.activeDurationMillis(recordingStartedAtElapsedRealtime,
+                end, totalPausedDurationMs);
     }
 
     private void scheduleRecordingTimeout() {
         cancelRecordingTimeout();
-        if (recordingTimeoutMinutes == RecordingOptions.RECORDING_TIMEOUT_OFF) {
-            return;
-        }
-        long timeoutDurationMs = recordingTimeoutMinutes * DateUtils.MINUTE_IN_MILLIS;
-        long remainingMs = timeoutDurationMs - getActiveRecordingDurationMs();
+        long remainingMs = RecordingTimeout.remainingMillis(recordingStartedAtElapsedRealtime,
+                getActiveRecordingDurationMs(), recordingTimeoutMinutes);
+        if (remainingMs < 0L) return;
         recordingTimeout = this::stopAndSave;
         mainHandler.postDelayed(recordingTimeout, Math.max(0L, remainingMs));
     }
@@ -668,21 +673,6 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
             cancelPreparationCountdown();
             cancelRecordingTimeout();
         });
-
-        Runnable scheduledStart = pendingStart;
-        if (scheduledStart != null) {
-            mainHandler.removeCallbacks(scheduledStart);
-            pendingStart = null;
-            ScreenRecorder cancelledRecorder = recorder;
-            recorder = null;
-            executor.execute(() -> {
-                if (cancelledRecorder != null) {
-                    cancelledRecorder.release();
-                }
-                finishService();
-            });
-            return;
-        }
 
         ScreenRecorder activeRecorder = recorder;
         if (activeRecorder == null) {
@@ -808,58 +798,50 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                 Toast.LENGTH_LONG).show());
     }
 
-    @Override
-    public void onPreparationFinalCountdownStarted(int durationSeconds) {
-        runOnMainThread(() -> startPreparationCountdown(durationSeconds));
-    }
-
     private void startPreparationIndicator() {
         cancelPreparationCountdown();
-        preparationCountdownToast = Toast.makeText(
-                this,
-                R.string.preparing_recording,
-                Toast.LENGTH_SHORT);
+        preparationCountdownToast = Toast.makeText(this,
+                R.string.preparing_recording, Toast.LENGTH_SHORT);
         preparationCountdownToast.show();
     }
 
-    private void startPreparationCountdown(int durationSeconds) {
-        cancelPreparationCountdown();
-        final int firstDelaySeconds = Math.max(0, durationSeconds - 3);
-        preparationCountdownToast = Toast.makeText(
-                this,
-                R.string.preparing_recording_countdown_5_4,
-                Toast.LENGTH_SHORT);
-        preparationCountdownToast.show();
+    private void beginRecording() {
+        ScreenRecorder preparedRecorder = recorder;
+        if (RecordingState.get() != RecordingState.READY || preparedRecorder == null
+                || stopping.get() || finished.get() || !preparedRecorder.beginCountdown()) return;
+        countdown = new RecordingCountdown(SystemClock.elapsedRealtime(), countdownSeconds);
+        setRecordingState(RecordingState.COUNTDOWN);
+        notificationManager.notify(NOTIFICATION_ID, createRecordingNotification(true));
         preparationCountdownTick = new Runnable() {
-            @Override
-            public void run() {
-                if (preparationCountdownTick != this || stopping.get() || finished.get()) {
+            @Override public void run() {
+                if (preparationCountdownTick != this || stopping.get() || finished.get()
+                        || recorder != preparedRecorder) return;
+                long remaining = countdown.remainingMillis(SystemClock.elapsedRealtime());
+                if (remaining <= 0L) {
                     cancelPreparationCountdown();
+                    // The receiver preserves a quiet interval after the last toast disappears,
+                    // then requests the final keyframe before the shared timeline is created.
+                    preparedRecorder.onPreparationOverlayCleared();
+                    executor.execute(() -> startRecorder(preparedRecorder));
                     return;
                 }
-                preparationCountdownToast = Toast.makeText(
-                        RecordingService.this,
-                        R.string.preparing_recording_countdown_3_2,
-                        Toast.LENGTH_SHORT);
+                if (preparationCountdownToast != null) preparationCountdownToast.cancel();
+                preparationCountdownToast = Toast.makeText(RecordingService.this,
+                        getString(R.string.status_countdown, (remaining + 999L) / 1_000L),
+                        Toast.LENGTH_LONG);
                 preparationCountdownToast.show();
-                mainHandler.postDelayed(() -> {
-                    if (preparationCountdownTick != this) {
-                        return;
-                    }
-                    cancelPreparationCountdown();
-                    ScreenRecorder preparingRecorder = recorder;
-                    if (preparingRecorder != null) {
-                        preparingRecorder.onPreparationOverlayCleared();
-                    }
-                }, 2_000L);
+                // Fewer long text toasts avoid Android's background toast rate limit.
+                // The elapsed-time deadline still owns the exact countdown duration.
+                mainHandler.postDelayed(this, Math.min(3_000L, remaining));
             }
         };
-        mainHandler.postDelayed(preparationCountdownTick, firstDelaySeconds * 1_000L);
+        preparationCountdownTick.run();
     }
 
     private void cancelPreparationCountdown() {
         Runnable tick = preparationCountdownTick;
         preparationCountdownTick = null;
+        countdown = null;
         if (tick != null) {
             mainHandler.removeCallbacks(tick);
         }
@@ -879,14 +861,10 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
         cancelPreparationCountdown();
         cancelRecordingTimeout();
         cancelPendingNotificationRestore();
-        Runnable scheduledStart = pendingStart;
-        if (scheduledStart != null) {
-            mainHandler.removeCallbacks(scheduledStart);
-            pendingStart = null;
-        }
         ScreenRecorder activeRecorder = recorder;
         recorder = null;
         if (activeRecorder != null) {
+            if (!recorderStarted.get()) activeRecorder.cancelPreparation();
             activeRecorder.release();
         }
         setRecordingState(RecordingState.IDLE);

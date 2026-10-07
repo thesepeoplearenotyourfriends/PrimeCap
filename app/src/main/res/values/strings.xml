@@ -114,9 +114,7 @@
     <string name="video_bitrate_8">8 Mbps</string>
     <string name="video_bitrate_16">16 Mbps</string>
     <string name="video_bitrate_24">24 Mbps</string>
-    <string name="preparing_recording">Preparing recording…</string>
-    <string name="preparing_recording_countdown_5_4">5… 4…</string>
-    <string name="preparing_recording_countdown_3_2">3… 2…</string>
+    <string name="preparing_recording">Priming recorder…</string>
     <string name="recording_countdown_label">Recording countdown</string>
     <string name="countdown_0_seconds">0 seconds</string>
     <string name="countdown_3_seconds">3 seconds</string>
@@ -171,12 +169,12 @@
     <string name="cancel_recording">Cancel recording</string>
     <string name="stop_recording">Stop recording</string>
     <string name="status_idle">No recording in progress</string>
-    <string name="status_preparing">Preparing to record…</string>
+    <string name="status_preparing">Priming recorder</string>
     <string name="status_recording">Recording in progress</string>
     <string name="status_paused">Recording paused</string>
     <string name="status_saving">Saving recording…</string>
     <string name="status_countdown">Recording starts in %1$d</string>
-    <string name="status_idle_summary">Adjust your settings, then start your recording</string>
+    <string name="status_idle_summary">Adjust your settings, then prime the recorder.</string>
     <string name="status_preparing_summary">Wait while the video encoder prepares.</string>
     <string name="status_recording_summary">Use the button below or the notification to stop.</string>
     <string name="status_paused_summary">Resume from the notification or use the button below to stop.</string>
@@ -196,7 +194,7 @@
     <string name="notification_recording_title">Recording your screen</string>
     <string name="notification_recording_text">Recording in progress.</string>
     <string name="notification_paused_time">Paused • %1$s</string>
-    <string name="notification_preparing">Preparing the recording…</string>
+    <string name="notification_preparing">Priming recorder</string>
     <string name="notification_saving">Processing and saving the video…</string>
     <string name="notification_saved_title">Recording saved</string>
     <string name="notification_saved_text">Tap to watch the video.</string>
@@ -211,7 +209,7 @@
     <string name="recording_delete_failed">Could not delete the recording.</string>
     <string name="share_video">Share recording</string>
     <string name="quick_settings_tile_label">PrimeCap</string>
-    <string name="quick_settings_preparing">Starting</string>
+    <string name="quick_settings_preparing">Priming recorder</string>
     <string name="quick_settings_recording">Recording</string>
     <string name="quick_settings_paused">Paused</string>
     <string name="quick_settings_saving">Saving</string>
@@ -219,4 +217,12 @@
     <string name="quick_settings_description">%1$s, %2$s</string>
     <string name="use_root_audio_capture">Use root audio capture</string>
     <string name="use_root_audio_capture_summary">Capture playback through a supported root writeback endpoint. Requires root; microphone capture is unchanged.</string>
+    <string name="prime_recorder">Prime Recorder</string>
+    <string name="status_ready">Recorder ready</string>
+    <string name="status_ready_summary">Open your target app, then start from the notification or Quick Settings. Cancel to discard this session.</string>
+    <string name="status_starting">Starting recording…</string>
+    <string name="rename_recording">Rename</string>
+    <string name="recording_name_invalid">Enter a name without path separators, control characters, or : * ? &quot; &lt; &gt; |</string>
+    <string name="recording_renamed">Recording renamed</string>
+    <string name="recording_rename_failed">Could not rename recording</string>
 </resources>

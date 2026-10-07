@@ -79,13 +79,15 @@ internal fun RecordingsScreen(
     loading: Boolean,
     loadFailed: Boolean,
     deleting: Boolean,
+    renaming: Boolean,
     onOpenRecording: (RecordingItem) -> Unit,
     onDeleteRecordings: (List<RecordingItem>) -> Unit,
+    onRenameRecording: (RecordingItem) -> Unit,
 ) {
     val scrollBehavior = MiuixScrollBehavior()
     var selectedIds by remember { mutableStateOf(emptySet<Long>()) }
     var sortOption by rememberSaveable { mutableIntStateOf(SORT_BY_DATE) }
-    val busy = loading || deleting
+    val busy = loading || deleting || renaming
     val selectionMode = selectedIds.isNotEmpty()
     val selectedRecordings = remember(recordings, selectedIds) {
         recordings.filter { it.id in selectedIds }
@@ -141,7 +143,7 @@ internal fun RecordingsScreen(
         selectedIds = selectedIds.intersect(availableIds)
     }
 
-    if (selectionMode && !deleting) {
+    if (selectionMode && !busy) {
         BackHandler {
             selectedIds = emptySet()
         }
@@ -194,6 +196,17 @@ internal fun RecordingsScreen(
                                 },
                             )
                         }
+                        if (selectedRecordings.size == 1) {
+                            IconButton(
+                                enabled = !busy,
+                                onClick = { onRenameRecording(selectedRecordings.single()) },
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.rename_recording),
+                                    color = MiuixTheme.colorScheme.primary,
+                                )
+                            }
+                        }
                         IconButton(
                             enabled = !busy && selectedRecordings.isNotEmpty(),
                             onClick = { onDeleteRecordings(selectedRecordings) },
@@ -214,7 +227,7 @@ internal fun RecordingsScreen(
                             }
                         }
                         IconButton(
-                            enabled = !deleting,
+                            enabled = !busy,
                             onClick = { selectedIds = emptySet() },
                         ) {
                             Icon(

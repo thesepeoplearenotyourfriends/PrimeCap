@@ -24,7 +24,8 @@ import java.util.concurrent.atomic.AtomicReference;
 final class InternalAudioRecorder {
     private static final String TAG = "InternalAudioRecorder";
     private static final int BIT_RATE = 196_000;
-    private static final int CHANNEL_COUNT = 1;
+    private final int channelCount;
+    private final int bytesPerFrame;
     private static final int READ_SAMPLES = 4096;
     private static final float MIC_GAIN = 1.4f;
     private static final long CODEC_TIMEOUT_US = 10_000L;
@@ -74,6 +75,8 @@ final class InternalAudioRecorder {
         this.capturePlayback = audioSource.usesInternalAudio();
         this.includeMicrophone = audioSource.usesMicrophone();
         this.useRootAudio = useRootAudio && capturePlayback;
+        this.channelCount = this.useRootAudio ? RootAudioPcm.CHANNEL_COUNT : 1;
+        this.bytesPerFrame = this.useRootAudio ? RootAudioPcm.byteCount(1) : Short.BYTES;
         if (!capturePlayback && !includeMicrophone) {
             throw new IllegalArgumentException("An audio capture source is required");
         }
@@ -197,7 +200,7 @@ final class InternalAudioRecorder {
         MediaFormat codecFormat = MediaFormat.createAudioFormat(
                 MediaFormat.MIMETYPE_AUDIO_AAC,
                 sampleRate,
-                CHANNEL_COUNT);
+                channelCount);
         codecFormat.setInteger(
                 MediaFormat.KEY_AAC_PROFILE,
                 MediaCodecInfo.CodecProfileLevel.AACObjectLC);
@@ -366,9 +369,9 @@ final class InternalAudioRecorder {
             if (!running) break;
             if (includeMicrophone) {
                 int offset = 0;
-                while (running && offset < block.mono.length) {
+                while (running && offset < block.frameCount) {
                     int count = microphoneRecord.read(microphone, offset,
-                            block.mono.length - offset, AudioRecord.READ_BLOCKING);
+                            block.frameCount - offset, AudioRecord.READ_BLOCKING);
                     if (count <= 0) {
                         if (!running) return;
                         throw new IOException("Microphone read failed: " + count);
@@ -376,9 +379,9 @@ final class InternalAudioRecorder {
                     offset += count;
                 }
                 if (!running) break;
-                mix(block.mono, microphone, block.mono.length);
+                RootAudioPcm.mixMicrophone(block.samples, microphone, block.frameCount, MIC_GAIN);
             }
-            queueShortPcm(block.mono, block.mono.length, block.sourceStartNanos);
+            queueShortPcm(block.samples, block.frameCount, block.sourceStartNanos);
             drainCodec(false);
         }
     }
@@ -535,18 +538,23 @@ final class InternalAudioRecorder {
                     throw new IOException("AAC encoder input buffer is unavailable");
                 }
                 input.clear();
-                int chunkFrames = Math.min(input.remaining() / 2, sourceEndFrame - sourceFrame);
+                int chunkFrames = Math.min(input.remaining() / bytesPerFrame, sourceEndFrame - sourceFrame);
                 if (chunkFrames == 0) {
                     throw new IOException("AAC encoder input buffer is too small");
                 }
-                input.order(ByteOrder.LITTLE_ENDIAN)
-                        .asShortBuffer()
-                        .put(samples, sourceFrame, chunkFrames);
+                int byteCount;
+                if (useRootAudio) {
+                    byteCount = RootAudioPcm.copyFrames(input, samples, sourceFrame, chunkFrames);
+                } else {
+                    input.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                            .put(samples, sourceFrame, chunkFrames);
+                    byteCount = chunkFrames * Short.BYTES;
+                }
                 long chunkStartNanos = bufferStartNanos
                         + AudioFrameClock.framesToNanos(sourceFrame, sampleRate);
                 queueAudioInputBuffer(
                         inputIndex,
-                        chunkFrames * 2,
+                        byteCount,
                         chunkStartNanos,
                         chunkFrames);
                 sourceFrame += chunkFrames;

@@ -2,6 +2,7 @@
 
 package com.openrecorder.app
 
+import android.content.ContentValues
 import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
@@ -79,6 +80,15 @@ internal class RecordingRepository(context: Context) {
                 }
             }
         }.orEmpty()
+    }
+
+    fun renameRecording(recording: RecordingItem, basename: String): Boolean {
+        return RecordingRename.apply(basename) { displayName ->
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            }
+            resolver.update(recording.uri, values, null, null)
+        }
     }
 
     fun deleteRecordings(recordings: List<RecordingItem>): RecordingDeletionResult {

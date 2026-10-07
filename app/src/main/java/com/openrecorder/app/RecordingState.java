@@ -12,7 +12,9 @@ final class RecordingState {
     }
 
     static final int IDLE = 0;
-    static final int PREPARING = 1;
+    static final int PRIMING = 1;
+    static final int READY = 5;
+    static final int COUNTDOWN = 6;
     static final int RECORDING = 2;
     static final int PAUSED = 3;
     static final int SAVING = 4;
@@ -51,7 +53,12 @@ final class RecordingState {
     }
 
     private static int normalize(int state) {
-        return state >= IDLE && state <= SAVING ? state : IDLE;
+        switch (state) {
+            case IDLE: case PRIMING: case READY: case COUNTDOWN:
+            case RECORDING: case PAUSED: case SAVING:
+                return state;
+            default: return IDLE;
+        }
     }
 
     private static void notifyListenersIfCurrent(int state) {
