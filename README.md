@@ -45,8 +45,19 @@ The more detailed daemon build and protocol notes live in
 ## Prime, start, and manage recordings
 
 Press **Prime Recorder** to grant capture permissions and warm up the selected
-video/audio backends. The existing minimum 20-second video warmup and readiness
-keyframe happen entirely in this phase. Once **Recorder ready** appears, PrimeCap
+video/audio backends. PRIMING discards video for at least **25 seconds after video
+format/warmup start**, then obtains a readiness keyframe before entering READY.
+Repeated captures empirically produced unusable video for roughly the first
+20–25 seconds. The root cause is unknown; PrimeCap intentionally adapts around
+that observed instability with a conservative discard guard rather than further
+investigating or optimizing the delay. This is not a known platform, encoder,
+daemon, or hardware requirement.
+
+The guard restores the old effective startup safety margin entirely within
+PRIMING. The user's configured countdown contributes nothing to stabilization:
+even a zero-second countdown starts only after the safe guard and readiness
+keyframe, followed by the quiet interval and final synchronization keyframe.
+Once **Recorder ready** appears, PrimeCap
 keeps draining and discarding preparation video until you press **Start Recording**
 in the app, notification, or Quick Settings tile. Cancel from the app or
 notification to tear the prepared session down without saving a recording.

@@ -52,13 +52,16 @@ final class PrimeCapVideoRecorder {
     private static final int MAX_PAYLOAD = 16 * 1024 * 1024;
     private static final long STOP_TIMEOUT_MS = 8_000L;
     private static final long DAEMON_EXIT_TIMEOUT_MS = 2_000L;
-    static final int MINIMUM_WARMUP_SECONDS = 20;
+    // Empirical discard guard (unknown root cause), not a platform/encoder requirement.
+    static final int MINIMUM_WARMUP_SECONDS = PrimeCapPreparationStages.MINIMUM_PRIMING_SECONDS;
     private static final long MINIMUM_WARMUP_NANOS = TimeUnit.SECONDS.toNanos(
             MINIMUM_WARMUP_SECONDS);
     private static final long QUIET_PERIOD_NANOS = TimeUnit.SECONDS.toNanos(1L);
     private static final long SYNC_RETRY_NANOS = TimeUnit.SECONDS.toNanos(2L);
     private static final long KEYFRAME_TIMEOUT_MS = 30_000L;
-    private static final long MINIMUM_WARMUP_TIMEOUT_MS = 25_000L;
+    // Keep sample-arrival headroom beyond the discard guard; readiness has its own wait.
+    private static final long MINIMUM_WARMUP_TIMEOUT_MS =
+            TimeUnit.NANOSECONDS.toMillis(MINIMUM_WARMUP_NANOS) + 5_000L;
     private static final long SOURCE_CLOCK_TOLERANCE_NANOS = 30_000_000_000L;
     private static final int RELAY_LOG_LIMIT = 16 * 1024;
     private static final String LAUNCHER_EXEC_PREFIX = "PrimeCap launcher exec";

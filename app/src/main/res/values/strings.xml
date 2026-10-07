@@ -175,7 +175,7 @@
     <string name="status_saving">Saving recording…</string>
     <string name="status_countdown">Recording starts in %1$d</string>
     <string name="status_idle_summary">Adjust your settings, then prime the recorder.</string>
-    <string name="status_preparing_summary">Wait while the video encoder prepares.</string>
+    <string name="status_preparing_summary">Wait while startup video is discarded and the recorder becomes ready.</string>
     <string name="status_recording_summary">Use the button below or the notification to stop.</string>
     <string name="status_paused_summary">Resume from the notification or use the button below to stop.</string>
     <string name="status_saving_summary">The video is being processed and saved on your device.</string>

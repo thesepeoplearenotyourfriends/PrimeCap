@@ -2,6 +2,11 @@ package com.openrecorder.app;
 
 /** Monotonic, stage-driven preparation state used by the video receiver thread. */
 final class PrimeCapPreparationStages {
+    // Repeated captures empirically produced unusable startup video for roughly 20–25 s.
+    // The root cause is unknown; deliberately discard for 25 s rather than investigate
+    // or optimize it here. User countdown time must never contribute to this guard.
+    static final int MINIMUM_PRIMING_SECONDS = 25;
+
     enum Action { NONE, REQUEST_READINESS_SYNC, READY, REQUEST_FINAL_SYNC, COMPLETE }
 
     private enum Stage { MINIMUM_WARMUP, READINESS_KEYFRAME, READY, COUNTDOWN, QUIET, FINAL_KEYFRAME, COMPLETE, CANCELLED }
