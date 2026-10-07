@@ -133,6 +133,7 @@ class MainActivity : ComponentActivity() {
         recordingSettingsUiState = mutableStateOf(
             RecordingSettingsUiState(
                 selectedAudioSource = recorderPreferences.loadAudioSource(),
+                useRootAudioCapture = recorderPreferences.loadUseRootAudioCapture(),
                 selectedSampleRate = recorderPreferences.loadSampleRate(),
                 selectedVideoResolution = recorderPreferences.loadVideoResolution(),
                 selectedVideoFrameRate = recorderPreferences.loadVideoFrameRate(),
@@ -187,6 +188,7 @@ class MainActivity : ComponentActivity() {
                             recordState.countdownSeconds == null
                         SettingsScreen(
                             selectedThemeIndex = appState.selectedThemeMode,
+                            useRootAudioCapture = settingsState.useRootAudioCapture,
                             enablePredictiveBack = appState.enablePredictiveBack,
                             selectedAudioIndex = AUDIO_SOURCES
                                 .indexOf(settingsState.selectedAudioSource)
@@ -219,6 +221,14 @@ class MainActivity : ComponentActivity() {
                             onEnablePredictiveBackChanged = { enabled ->
                                 updateAppUiState { it.copy(enablePredictiveBack = enabled) }
                                 recorderPreferences.saveEnablePredictiveBack(enabled)
+                            },
+                            onUseRootAudioCaptureChanged = { enabled ->
+                                if (optionsEnabled) {
+                                    updateRecordingSettingsUiState {
+                                        it.copy(useRootAudioCapture = enabled)
+                                    }
+                                    recorderPreferences.saveUseRootAudioCapture(enabled)
+                                }
                             },
                             onAudioSelected = { index ->
                                 if (optionsEnabled) {
@@ -615,7 +625,7 @@ class MainActivity : ComponentActivity() {
     private fun ensureAudioPermissionAndRequestCapture() {
         val state = recordingSettingsUiState.value
         val audioSource = state.selectedAudioSource
-        if ((audioSource.usesInternalAudio() || audioSource.usesMicrophone()) &&
+        if (audioSource.requiresRecordAudioPermission(state.useRootAudioCapture) &&
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
         ) {
             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -665,6 +675,7 @@ class MainActivity : ComponentActivity() {
             projectionData,
             state.selectedAudioSource,
             state.selectedSampleRate,
+            state.useRootAudioCapture,
             state.selectedVideoResolution,
             state.selectedVideoFrameRate,
             state.selectedVideoBitrate,
@@ -814,6 +825,7 @@ private data class RecordScreenUiState(
 @Immutable
 private data class RecordingSettingsUiState(
     val selectedAudioSource: AudioSource,
+    val useRootAudioCapture: Boolean,
     val selectedSampleRate: Int,
     val selectedVideoResolution: Int,
     val selectedVideoFrameRate: Int,

@@ -87,6 +87,7 @@ internal fun SettingsScreen(
     selectedThemeIndex: Int,
     enablePredictiveBack: Boolean,
     selectedAudioIndex: Int,
+    useRootAudioCapture: Boolean,
     selectedSampleRateIndex: Int,
     selectedVideoResolutionIndex: Int,
     selectedVideoFrameRateIndex: Int,
@@ -98,6 +99,7 @@ internal fun SettingsScreen(
     onThemeSelected: (Int) -> Unit,
     onEnablePredictiveBackChanged: (Boolean) -> Unit,
     onAudioSelected: (Int) -> Unit,
+    onUseRootAudioCaptureChanged: (Boolean) -> Unit,
     onSampleRateSelected: (Int) -> Unit,
     onVideoResolutionSelected: (Int) -> Unit,
     onVideoFrameRateSelected: (Int) -> Unit,
@@ -311,6 +313,13 @@ internal fun SettingsScreen(
                 item {
                     SmallTitle(text = stringResource(R.string.section_options))
                     PreferenceCard {
+                        SwitchPreference(
+                            title = stringResource(R.string.use_root_audio_capture),
+                            summary = stringResource(R.string.use_root_audio_capture_summary),
+                            checked = useRootAudioCapture,
+                            enabled = optionsEnabled,
+                            onCheckedChange = onUseRootAudioCaptureChanged,
+                        )
                         SelectablePreference(
                             title = stringResource(R.string.video_resolution_label),
                             items = videoResolutionOptions,

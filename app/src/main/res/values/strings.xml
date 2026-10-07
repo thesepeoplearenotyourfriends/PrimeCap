@@ -217,4 +217,6 @@
     <string name="quick_settings_saving">Saving</string>
     <string name="quick_settings_stopping">Stopping</string>
     <string name="quick_settings_description">%1$s, %2$s</string>
+    <string name="use_root_audio_capture">Use root audio capture</string>
+    <string name="use_root_audio_capture_summary">Capture playback through a supported root writeback endpoint. Requires root; microphone capture is unchanged.</string>
 </resources>

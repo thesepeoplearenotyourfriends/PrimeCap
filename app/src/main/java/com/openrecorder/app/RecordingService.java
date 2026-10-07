@@ -78,12 +78,15 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
     private volatile long totalPausedDurationMs;
     private AudioSource audioSource = AudioSource.NONE;
 
+    private static final String EXTRA_ROOT_AUDIO_CAPTURE = "use_root_audio_capture";
+
     static Intent createStartIntent(
             Context context,
             int resultCode,
             Intent resultData,
             AudioSource audioSource,
             int sampleRate,
+            boolean useRootAudioCapture,
             int videoResolution,
             int videoFrameRate,
             int videoBitrate,
@@ -96,6 +99,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
                 .putExtra(EXTRA_RESULT_DATA, resultData)
                 .putExtra(EXTRA_AUDIO_SOURCE, audioSource.ordinal())
+                .putExtra(EXTRA_ROOT_AUDIO_CAPTURE, useRootAudioCapture)
                 .putExtra(EXTRA_SAMPLE_RATE, RecordingOptions.normalizeSampleRate(sampleRate))
                 .putExtra(
                         EXTRA_VIDEO_RESOLUTION,
@@ -249,6 +253,7 @@ public class RecordingService extends Service implements ScreenRecorder.Listener
                     resultData,
                     audioSource,
                     sampleRate,
+                    intent.getBooleanExtra(EXTRA_ROOT_AUDIO_CAPTURE, false),
                     videoResolution,
                     videoFrameRate,
                     videoBitrate,
