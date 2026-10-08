@@ -31,7 +31,6 @@ final class ScreenRecorder {
         void onRecorderLimitReached();
         void onRecorderError(Exception error);
         void onAudioCaptureFailed();
-        void onPreparationFinalCountdownStarted(int durationSeconds);
     }
 
     private static final String TAG = "ScreenRecorder";
@@ -61,6 +60,7 @@ final class ScreenRecorder {
     private RecordingTimeline timeline;
     private Uri outputUri;
     private CaptureSize preparedCaptureSize;
+    private volatile boolean preparationCancelled;
     private boolean prepared;
     private boolean started;
     private boolean paused;
@@ -124,7 +124,7 @@ final class ScreenRecorder {
         if (prepared) {
             return;
         }
-        if (started || stopped) {
+        if (started || stopped || preparationCancelled) {
             throw new IllegalStateException("ScreenRecorder is single-use");
         }
         MediaProjectionManager manager = context.getSystemService(MediaProjectionManager.class);
@@ -153,18 +153,30 @@ final class ScreenRecorder {
         prepared = true;
     }
 
+    synchronized void prime() throws IOException {
+        prepare();
+        if (preparationCancelled) throw new IOException("Priming cancelled");
+        videoRecorder.start();
+        videoRecorder.awaitReady();
+    }
+
+    boolean beginCountdown() {
+        PrimeCapVideoRecorder active = videoRecorder;
+        return active != null && active.beginCountdown();
+    }
+
     synchronized void start() throws IOException {
-        if (started || stopped) {
+        if (started || stopped || preparationCancelled) {
             throw new IllegalStateException("ScreenRecorder is single-use");
         }
         prepare();
-        prepareOutput();
-        started = true;
 
         // Daemon connection and FORMAT negotiation are preparation,
         // not recorded time. Arm the shared timeline only once video is usable.
-        videoRecorder.start();
         long recordingBoundaryNanos = videoRecorder.awaitRecordingBoundary();
+        if (preparationCancelled) throw new IOException("Recording start cancelled");
+        prepareOutput();
+        started = true;
         timeline = new RecordingTimeline(recordingBoundaryNanos);
         if (audioRecorder != null) {
             try {
@@ -174,6 +186,12 @@ final class ScreenRecorder {
             }
         }
         videoRecorder.arm(timeline);
+    }
+
+    long getRecordingStartedAtElapsedRealtime() {
+        long elapsedSinceBoundaryMs = Math.max(0L,
+                System.nanoTime() - timeline.getStartedAtNanos()) / 1_000_000L;
+        return android.os.SystemClock.elapsedRealtime() - elapsedSinceBoundaryMs;
     }
 
     synchronized void pause() throws IOException {
@@ -266,6 +284,7 @@ final class ScreenRecorder {
     }
 
     void cancelPreparation() {
+        preparationCancelled = true;
         PrimeCapVideoRecorder activeVideoRecorder = videoRecorder;
         if (timeline == null && activeVideoRecorder != null) {
             activeVideoRecorder.cancelPreparation();
@@ -351,10 +370,11 @@ final class ScreenRecorder {
             }
             pendingMuxer = new RecordingMuxer(descriptor.getFileDescriptor());
             pendingVideoTrack = pendingMuxer.createTrack("video");
-            videoRecorder.setOutputTrack(pendingVideoTrack);
             if (audioRecorder != null) {
                 audioRecorder.setOutputTrack(pendingMuxer.createTrack("audio"));
             }
+            // Declare every track before registering the cached video format.
+            videoRecorder.setOutputTrack(pendingVideoTrack);
         } catch (Exception error) {
             if (pendingMuxer != null) {
                 pendingMuxer.release();
@@ -436,11 +456,6 @@ final class ScreenRecorder {
                 size.targetFrameRate,
                 getMaximumVideoFileSize(),
                 new PrimeCapVideoRecorder.Listener() {
-                    @Override
-                    public void onFinalCountdownStarted(int durationSeconds) {
-                        listener.onPreparationFinalCountdownStarted(durationSeconds);
-                    }
-
                     @Override
                     public void onLimitReached() {
                         listener.onRecorderLimitReached();

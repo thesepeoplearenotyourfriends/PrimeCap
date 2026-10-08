@@ -2,6 +2,9 @@
 
 package com.openrecorder.app
 
+import android.app.AlertDialog
+import android.text.InputType
+import android.widget.EditText
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -57,7 +60,9 @@ class MainActivity : ComponentActivity() {
         val previousState = recordScreenUiState.value.recordingState
         updateRecordScreenUiState { it.copy(recordingState = newState) }
 
-        if (newState == RecordingState.RECORDING || newState == RecordingState.IDLE) {
+        if (newState == RecordingState.COUNTDOWN) {
+            beginCountdownUi(RecordingService.getCountdownDeadline())
+        } else {
             cancelCountdownUi()
         }
 
@@ -179,6 +184,7 @@ class MainActivity : ComponentActivity() {
                             rotationControlEnabled = !recordState.rotationChangeInProgress,
                             onRotationSelected = ::setDeviceRotation,
                             onActionClick = ::onRecordButtonClicked,
+                            onCancelClick = ::stopRecordingService,
                         )
                     },
                     settingsContent = {
@@ -329,8 +335,10 @@ class MainActivity : ComponentActivity() {
                             loading = state.loading,
                             loadFailed = state.loadFailed,
                             deleting = state.deleting,
+                            renaming = state.renaming,
                             onOpenRecording = ::openRecording,
                             onDeleteRecordings = ::deleteRecordings,
+                            onRenameRecording = ::showRenameDialog,
                         )
                     },
                 )
@@ -353,6 +361,11 @@ class MainActivity : ComponentActivity() {
             it.copy(
                 recordingState = RecordingState.get(),
             )
+        }
+        if (RecordingState.get() == RecordingState.COUNTDOWN) {
+            beginCountdownUi(RecordingService.getCountdownDeadline())
+        } else {
+            cancelCountdownUi()
         }
         refreshDeviceRotation()
         if (recordingsLoaded && recordingsStale && !recordingsUiState.value.deleting) {
@@ -478,8 +491,60 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showRenameDialog(recording: RecordingItem) {
+        if (recordingsUiState.value.deleting || recordingsUiState.value.renaming) return
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT
+            isSingleLine = true
+            setText(RecordingName.basename(recording.name))
+            selectAll()
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.rename_recording)
+            .setView(input)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.rename_recording, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = input.text.toString()
+                if (RecordingName.displayName(name) == null) {
+                    input.error = getString(R.string.recording_name_invalid)
+                } else {
+                    dialog.dismiss()
+                    renameRecording(recording, name)
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun renameRecording(recording: RecordingItem, name: String) {
+        if (recordingsUiState.value.deleting || recordingsUiState.value.renaming) return
+        val executor = recordingsExecutor ?: Executors.newSingleThreadExecutor().also {
+            recordingsExecutor = it
+        }
+        if (executor.isShutdown) return
+        updateRecordingsUiState { it.copy(renaming = true) }
+        executor.execute {
+            val renamed = recordingRepository.renameRecording(recording, name)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                updateRecordingsUiState { it.copy(renaming = false) }
+                showToast(
+                    if (renamed) R.string.recording_renamed else R.string.recording_rename_failed,
+                    if (renamed) Toast.LENGTH_SHORT else Toast.LENGTH_LONG,
+                )
+                if (renamed) {
+                    recordingsStale = true
+                    loadRecordings(force = true)
+                }
+            }
+        }
+    }
+
     private fun deleteRecordings(selectedRecordings: List<RecordingItem>) {
-        if (recordingsUiState.value.deleting) return
+        if (recordingsUiState.value.deleting || recordingsUiState.value.renaming) return
         val recordingsToDelete = selectedRecordings.distinctBy(RecordingItem::id)
         if (recordingsToDelete.isEmpty()) return
 
@@ -606,7 +671,8 @@ class MainActivity : ComponentActivity() {
     private fun onRecordButtonClicked() {
         val state = recordScreenUiState.value
         when {
-            state.countdownSeconds != null || state.recordingState == RecordingState.PREPARING -> {
+            state.recordingState == RecordingState.PRIMING ||
+                state.recordingState == RecordingState.COUNTDOWN -> {
                 cancelCountdownUi()
                 stopRecordingService()
             }
@@ -614,6 +680,14 @@ class MainActivity : ComponentActivity() {
             state.recordingState == RecordingState.RECORDING ||
                 state.recordingState == RecordingState.PAUSED -> {
                 stopRecordingService()
+            }
+
+            state.recordingState == RecordingState.READY -> {
+                try {
+                    startService(RecordingService.createBeginIntent(this))
+                } catch (_: RuntimeException) {
+                    showToast(R.string.recording_failed, Toast.LENGTH_LONG)
+                }
             }
 
             state.recordingState == RecordingState.IDLE -> {
@@ -667,8 +741,6 @@ class MainActivity : ComponentActivity() {
 
     private fun scheduleRecording(resultCode: Int, projectionData: Intent) {
         val state = recordingSettingsUiState.value
-        val countdownMillis = state.selectedCountdownSeconds.toLong() * 1_000L
-        val recordingStartTime = SystemClock.elapsedRealtime() + countdownMillis
         val startIntent = RecordingService.createStartIntent(
             this,
             resultCode,
@@ -682,16 +754,12 @@ class MainActivity : ComponentActivity() {
             RecordingOptions.VIDEO_CODEC_H264,
             state.selectedNamingPattern,
             state.recordingTimeoutMinutes,
-            recordingStartTime,
+            state.selectedCountdownSeconds,
         )
 
         try {
             startForegroundService(startIntent)
-            if (countdownMillis > 0L) {
-                beginCountdownUi(recordingStartTime)
-            } else {
-                cancelCountdownUi()
-            }
+            cancelCountdownUi()
         } catch (_: RuntimeException) {
             showToast(R.string.recording_failed, Toast.LENGTH_LONG)
         }
@@ -699,7 +767,8 @@ class MainActivity : ComponentActivity() {
 
     private fun beginCountdownUi(recordingStartTime: Long) {
         cancelCountdownUi()
-        val remainingMillis = (recordingStartTime - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
+        val remainingMillis = recordingStartTime - SystemClock.elapsedRealtime()
+        if (remainingMillis <= 0L) return
         val initialSeconds = maxOf(1, ((remainingMillis + 999L) / 1_000L).toInt())
         updateRecordScreenUiState { it.copy(countdownSeconds = initialSeconds) }
         countDownTimer = object : CountDownTimer(remainingMillis, COUNTDOWN_TICK_MILLIS) {
@@ -841,4 +910,5 @@ private data class RecordingsUiState(
     val loading: Boolean = false,
     val loadFailed: Boolean = false,
     val deleting: Boolean = false,
+    val renaming: Boolean = false,
 )

@@ -58,6 +58,7 @@ internal fun RecorderScreen(
     rotationControlEnabled: Boolean,
     onRotationSelected: (DeviceRotationState) -> Unit,
     onActionClick: () -> Unit,
+    onCancelClick: () -> Unit,
 ) {
     val scrollBehavior = MiuixScrollBehavior()
 
@@ -108,6 +109,17 @@ internal fun RecorderScreen(
                     enabled = actionEnabled,
                     onClick = onActionClick,
                 )
+            }
+            if (recordingState == RecordingState.READY) {
+                item {
+                    Spacer(Modifier.height(12.dp))
+                    RecordActionCard(
+                        label = stringResource(R.string.cancel_recording),
+                        recording = false,
+                        enabled = actionEnabled,
+                        onClick = onCancelClick,
+                    )
+                }
             }
         }
     }
@@ -176,7 +188,7 @@ private fun RecordingStatusCard(
 ) {
     val targetStatusColor = when {
         countdownSeconds != null -> MiuixTheme.colorScheme.primary
-        recordingState == RecordingState.PREPARING -> MiuixTheme.colorScheme.primary
+        recordingState == RecordingState.PRIMING -> MiuixTheme.colorScheme.primary
         recordingState == RecordingState.RECORDING -> MiuixTheme.colorScheme.error
         recordingState == RecordingState.PAUSED -> MiuixTheme.colorScheme.primary
         recordingState == RecordingState.SAVING -> MiuixTheme.colorScheme.primary
@@ -317,7 +329,9 @@ private data class RecordingPresentation(
 @Composable
 private fun statusTitle(recordingState: Int, countdownSeconds: Int?): String = when {
     countdownSeconds != null -> stringResource(R.string.status_countdown, countdownSeconds)
-    recordingState == RecordingState.PREPARING -> stringResource(R.string.status_preparing)
+    recordingState == RecordingState.READY -> stringResource(R.string.status_ready)
+    recordingState == RecordingState.COUNTDOWN -> stringResource(R.string.status_starting)
+    recordingState == RecordingState.PRIMING -> stringResource(R.string.status_preparing)
     recordingState == RecordingState.RECORDING -> stringResource(R.string.status_recording)
     recordingState == RecordingState.PAUSED -> stringResource(R.string.status_paused)
     recordingState == RecordingState.SAVING -> stringResource(R.string.status_saving)
@@ -327,7 +341,9 @@ private fun statusTitle(recordingState: Int, countdownSeconds: Int?): String = w
 @Composable
 private fun statusSummary(recordingState: Int, countdownSeconds: Int?): String = when {
     countdownSeconds != null -> stringResource(R.string.status_countdown_summary)
-    recordingState == RecordingState.PREPARING -> stringResource(R.string.status_preparing_summary)
+    recordingState == RecordingState.READY -> stringResource(R.string.status_ready_summary)
+    recordingState == RecordingState.COUNTDOWN -> stringResource(R.string.status_countdown_summary)
+    recordingState == RecordingState.PRIMING -> stringResource(R.string.status_preparing_summary)
     recordingState == RecordingState.RECORDING -> stringResource(R.string.status_recording_summary)
     recordingState == RecordingState.PAUSED -> stringResource(R.string.status_paused_summary)
     recordingState == RecordingState.SAVING -> stringResource(R.string.status_saving_summary)
@@ -336,10 +352,12 @@ private fun statusSummary(recordingState: Int, countdownSeconds: Int?): String =
 
 @Composable
 private fun actionLabel(recordingState: Int, countdownSeconds: Int?): String = when {
-    countdownSeconds != null || recordingState == RecordingState.PREPARING ->
+    countdownSeconds != null || recordingState == RecordingState.PRIMING ||
+        recordingState == RecordingState.COUNTDOWN ->
         stringResource(R.string.cancel_recording)
     recordingState == RecordingState.RECORDING || recordingState == RecordingState.PAUSED ->
         stringResource(R.string.stop_recording)
     recordingState == RecordingState.SAVING -> stringResource(R.string.status_saving)
-    else -> stringResource(R.string.start_recording)
+    recordingState == RecordingState.READY -> stringResource(R.string.start_recording)
+    else -> stringResource(R.string.prime_recorder)
 }

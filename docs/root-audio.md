@@ -25,9 +25,14 @@ The helper HW_REFINEs interleaved stereo S16_LE at the selected 44100/48000 Hz r
 If unsupported, it tries the other rate. It refines period-size/count constraints
 before HW_PARAMS and checks the resulting rate/channel configuration. Failure to
 negotiate either rate is an explicit backend error. The acknowledged actual rate
-configures both the mono AAC encoder and, when selected, the existing microphone
-AudioRecord. Java averages each stereo pair in a 32-bit accumulator before passing
-mono samples to the existing gain/clipping mixer and encoder.
+configures the two-channel AAC encoder and, when selected, the mono microphone
+AudioRecord. Java preserves each native interleaved left/right sample. A block
+explicitly counts audio frames: N frames contain N * 2 shorts / N * 4 bytes.
+For root playback with microphone, one mono microphone sample per frame is gained
+by the existing 1.4 factor and added equally to left and right, with independent
+PCM16 clipping. AAC bitrate remains 196,000 bps. No normalization, resampling, or
+other processing is added. This removes the known Java stereo downmix; it does
+not establish that the MediaTek writeback path is bit-perfect.
 
 ## IPC and source timing
 
@@ -110,7 +115,8 @@ Fixtures include the actual Armor line (card 0/device 9), a shifted MediaTek lay
 ID-prefix, description-only matches, and capture-only rejection cases. The host test
 checks timestamp/availability math and exits simulated blocked readers on both
 control-byte and EOF shutdown. JVM tests check format/version validation, stereo
-downmix overflow, source timestamp preservation, explicit fallback quality, and
+preservation, stereo frame/sample/byte math, microphone gain/clipping,
+source timestamp preservation, explicit fallback quality, and
 truncated/oversized packets, and the permission matrix for every audio source. Host tests cannot verify this device's ALSA driver,
 root policy, actual playback routing, or physical A/V synchronization.
 
@@ -120,7 +126,8 @@ on another device is insufficient. SELinux/root policy can still deny access.
 No mixer routing controls or HAL changes are made: the kernel endpoint must already
 supply the playback mix. Hardware timestamp accuracy and support vary by kernel.
 
-Before release, verify on the rooted Armor X5 Pro: switch-off playback regression;
+Before release, verify left/right separation with an asymmetric playback sample
+and inspect the exported AAC channel count/rate on the rooted Armor X5 Pro. Also verify: switch-off playback regression;
 root playback with the movie app; microphone-only and microphone + root playback;
 selected 44100 vs actual negotiated rate; several pause/resume boundaries and A/V
 sync; Stop during silence/blocked capture; root denied/absent endpoint; and app

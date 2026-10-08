@@ -21,14 +21,15 @@ public class RootAudioProtocolTest {
         assertEquals(48000, header.sampleRate);
         assertEquals(4321, header.pid);
     }
-    @Test public void stereoIsDownmixedWithoutOverflowAndSourceTimestampIsPreserved() throws Exception {
+    @Test public void asymmetricStereoAndSourceTimestampArePreserved() throws Exception {
         long timestamp = 987654321012345L;
         ByteBuffer b = buffer(28).putInt(3).putInt(1).putLong(timestamp)
                 .putShort((short)32767).putShort((short)32767)
                 .putShort((short)-32768).putShort((short)-32768)
                 .putShort((short)1000).putShort((short)-500);
         RootAudioProtocol.Block block = new RootAudioProtocol.Block(input(b));
-        assertArrayEquals(new short[]{32767, -32768, 250}, block.mono);
+        assertArrayEquals(new short[]{32767, 32767, -32768, -32768, 1000, -500}, block.samples);
+        assertEquals(3, block.frameCount);
         assertEquals(timestamp, block.sourceStartNanos);
         assertTrue(block.hardwareTimestamp);
     }

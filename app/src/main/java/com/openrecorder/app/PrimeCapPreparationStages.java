@@ -2,9 +2,14 @@ package com.openrecorder.app;
 
 /** Monotonic, stage-driven preparation state used by the video receiver thread. */
 final class PrimeCapPreparationStages {
-    enum Action { NONE, REQUEST_READINESS_SYNC, START_COUNTDOWN, REQUEST_FINAL_SYNC, COMPLETE }
+    // Repeated captures empirically produced unusable startup video for roughly 20–25 s.
+    // The root cause is unknown; deliberately discard for 25 s rather than investigate
+    // or optimize it here. User countdown time must never contribute to this guard.
+    static final int MINIMUM_PRIMING_SECONDS = 25;
 
-    private enum Stage { MINIMUM_WARMUP, READINESS_KEYFRAME, COUNTDOWN, QUIET, FINAL_KEYFRAME, COMPLETE }
+    enum Action { NONE, REQUEST_READINESS_SYNC, READY, REQUEST_FINAL_SYNC, COMPLETE }
+
+    private enum Stage { MINIMUM_WARMUP, READINESS_KEYFRAME, READY, COUNTDOWN, QUIET, FINAL_KEYFRAME, COMPLETE, CANCELLED }
 
     private final long minimumWarmupNanos;
     private final long retryNanos;
@@ -12,6 +17,7 @@ final class PrimeCapPreparationStages {
     private Stage stage = Stage.MINIMUM_WARMUP;
     private long startedNanos;
     private long readinessRequestNanos;
+    private long readinessReachedNanos;
     private long countdownStartedNanos;
     private long countdownEndedNanos;
     private long quietUntilNanos;
@@ -35,9 +41,9 @@ final class PrimeCapPreparationStages {
         }
         if (stage == Stage.READINESS_KEYFRAME) {
             if (keyFrame && nowNanos >= readinessRequestNanos) {
-                stage = Stage.COUNTDOWN;
-                countdownStartedNanos = nowNanos;
-                return Action.START_COUNTDOWN;
+                stage = Stage.READY;
+                readinessReachedNanos = nowNanos;
+                return Action.READY;
             }
             if (nowNanos - readinessRequestNanos >= retryNanos) {
                 readinessRequestNanos = nowNanos;
@@ -55,6 +61,13 @@ final class PrimeCapPreparationStages {
         return Action.NONE;
     }
 
+    synchronized boolean beginCountdown(long nowNanos) {
+        if (stage != Stage.READY) return false;
+        countdownStartedNanos = nowNanos;
+        stage = Stage.COUNTDOWN;
+        return true;
+    }
+
     synchronized boolean onCountdownCleared(long nowNanos) {
         if (stage != Stage.COUNTDOWN) {
             return false;
@@ -65,6 +78,8 @@ final class PrimeCapPreparationStages {
         return true;
     }
 
+    synchronized void cancel() { stage = Stage.CANCELLED; }
+    synchronized long getReadinessReachedNanos() { return readinessReachedNanos; }
     synchronized long getReadinessRequestNanos() { return readinessRequestNanos; }
     synchronized long getCountdownStartedNanos() { return countdownStartedNanos; }
     synchronized long getCountdownEndedNanos() { return countdownEndedNanos; }

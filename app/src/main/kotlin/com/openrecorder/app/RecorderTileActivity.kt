@@ -8,7 +8,6 @@ import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
-import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -114,7 +113,6 @@ class RecorderTileActivity : ComponentActivity() {
     private fun startRecording(resultCode: Int, projectionData: Intent) {
         if (RecordingState.get() != RecordingState.IDLE) return
 
-        val countdownMillis = recorderPreferences.loadCountdownSeconds().toLong() * 1_000L
         val startIntent = RecordingService.createStartIntent(
             this,
             resultCode,
@@ -128,7 +126,7 @@ class RecorderTileActivity : ComponentActivity() {
             RecordingOptions.VIDEO_CODEC_H264,
             recorderPreferences.loadNamingPattern(),
             recorderPreferences.loadRecordingTimeoutMinutes(),
-            SystemClock.elapsedRealtime() + countdownMillis,
+            recorderPreferences.loadCountdownSeconds(),
         )
 
         try {

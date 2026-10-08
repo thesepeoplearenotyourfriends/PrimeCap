@@ -21,7 +21,7 @@ The outcome is in < Android 12, FLAG_SECURE enforcement wasn’t equally airtigh
    `app/scrcpy/overlay`. This produces the packaged `primecap-video-daemon` and
    `primecap-relay` assets; the patch and overlay keep the divergence from
    upstream visible and reviewable.
-2. When recording starts, PrimeCap uses root to stage a tiny native launcher.
+2. When the recorder is primed, PrimeCap uses root to stage a tiny native launcher.
    The launcher deliberately changes supplementary groups, GID, UID, and SELinux
    context before starting the daemon with the identity of Android's real
    `adb shell`. That shell context is what lets scrcpy's display capture run on
@@ -41,6 +41,36 @@ The outcome is in < Android 12, FLAG_SECURE enforcement wasn’t equally airtigh
 
 The more detailed daemon build and protocol notes live in
 [`app/scrcpy/README.md`](app/scrcpy/README.md).
+
+## Prime, start, and manage recordings
+
+Press **Prime Recorder** to grant capture permissions and warm up the selected
+video/audio backends. PRIMING discards video for at least **25 seconds after video
+format/warmup start**, then obtains a readiness keyframe before entering READY.
+Repeated captures empirically produced unusable video for roughly the first
+20–25 seconds. The root cause is unknown; PrimeCap intentionally adapts around
+that observed instability with a conservative discard guard rather than further
+investigating or optimizing the delay. This is not a known platform, encoder,
+daemon, or hardware requirement.
+
+The guard restores the old effective startup safety margin entirely within
+PRIMING. The user's configured countdown contributes nothing to stabilization:
+even a zero-second countdown starts only after the safe guard and readiness
+keyframe, followed by the quiet interval and final synchronization keyframe.
+Once **Recorder ready** appears, PrimeCap
+keeps draining and discarding preparation video until you press **Start Recording**
+in the app, notification, or Quick Settings tile. Cancel from the app or
+notification to tear the prepared session down without saving a recording.
+
+Start uses the Settings countdown (off / 3 / 5 / 10 seconds), owned by the
+foreground service and shown with countdown toasts over the target app. After
+the last toast clears, a quiet interval and final synchronization keyframe define
+the shared video/audio timeline. Preparation and READY waiting are excluded from
+the output duration and recording timeout.
+
+In **Recordings**, long-press a recording to select it. **Rename** appears when
+exactly one item is selected. Edit its basename; PrimeCap preserves `.mp4` and
+updates the owned MediaStore item without changing its directory or URI identity.
 
 ---
 

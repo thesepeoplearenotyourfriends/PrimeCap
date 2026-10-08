@@ -25,7 +25,8 @@ final class RootAudioProtocol {
         }
     }
     static final class Block {
-        final short[] mono;
+        final short[] samples;
+        final int frameCount;
         final long sourceStartNanos;
         final boolean hardwareTimestamp;
         Block(DataInputStream input) throws IOException {
@@ -38,11 +39,10 @@ final class RootAudioProtocol {
                 throw new IOException("Invalid root audio PCM block");
             }
             hardwareTimestamp = quality == 1;
-            mono = new short[frames];
-            for (int i = 0; i < frames; i++) {
-                short left = Short.reverseBytes(input.readShort());
-                short right = Short.reverseBytes(input.readShort());
-                mono[i] = (short) (((int) left + right) / 2);
+            frameCount = frames;
+            samples = new short[RootAudioPcm.sampleCount(frames)];
+            for (int i = 0; i < samples.length; i++) {
+                samples[i] = Short.reverseBytes(input.readShort());
             }
         }
     }
